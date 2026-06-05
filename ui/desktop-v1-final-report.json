@@ -1,0 +1,19 @@
+{
+  "iteration": "final-polished",
+  "errors": [],
+  "metrics": {
+    "scrollWidth": 1440,
+    "clientWidth": 1440,
+    "scrollHeight": 900,
+    "clientHeight": 900,
+    "fits": {
+      ".primary": true,
+      ".privacy": true,
+      ".why-box": true,
+      ".right-panel": true,
+      ".left-panel": true,
+      ".map-panel": true
+    },
+    "visibleOverflow": []
+  }
+}

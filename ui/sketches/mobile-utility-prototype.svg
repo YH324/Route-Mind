@@ -1,0 +1,49 @@
+<svg width="390" height="844" viewBox="0 0 390 844" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">RouteMind mobile utility prototype</title>
+  <desc id="desc">Mobile prototype showing quick language switch, map controls, bottom sheet actions, and route timeline.</desc>
+  <rect width="390" height="844" fill="#F4F7F6"/>
+  <rect x="14" y="16" width="362" height="56" rx="20" fill="#FFFFFF" stroke="#DDE7E3"/>
+  <text x="34" y="50" fill="#12332C" font-family="Arial, sans-serif" font-size="15" font-weight="700">春熙路附近吃火锅</text>
+  <rect x="282" y="26" width="76" height="36" rx="18" fill="#E9F3F0"/>
+  <rect x="288" y="31" width="32" height="26" rx="13" fill="#12332C"/>
+  <text x="297" y="49" fill="#FFFFFF" font-family="Arial" font-size="11" font-weight="700">中</text>
+  <text x="329" y="49" fill="#4E6660" font-family="Arial" font-size="11" font-weight="700">EN</text>
+
+  <rect x="14" y="88" width="362" height="292" rx="24" fill="#EAF0ED" stroke="#D6E0DC"/>
+  <path d="M44 198C100 164 142 216 200 176C258 136 306 196 348 166" stroke="#D7E1DD" stroke-width="12" stroke-linecap="round"/>
+  <path d="M48 318C122 276 184 338 270 292C308 272 334 270 354 260" stroke="#D7E1DD" stroke-width="10" stroke-linecap="round"/>
+  <path d="M78 298L136 238L204 284L270 218L326 262" stroke="#12A37F" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="78" cy="298" r="10" fill="#12332C" stroke="#fff" stroke-width="4"/>
+  <circle cx="136" cy="238" r="11" fill="#2D6CDF" stroke="#fff" stroke-width="4"/>
+  <circle cx="204" cy="284" r="11" fill="#EF7D38" stroke="#fff" stroke-width="4"/>
+  <circle cx="270" cy="218" r="11" fill="#12A37F" stroke="#fff" stroke-width="4"/>
+  <circle cx="326" cy="262" r="11" fill="#8B5CF6" stroke="#fff" stroke-width="4"/>
+  <rect x="28" y="104" width="154" height="34" rx="17" fill="#FFFFFF"/>
+  <text x="48" y="126" fill="#12332C" font-family="Arial" font-size="12" font-weight="700">地图 · 路线视图</text>
+  <rect x="324" y="104" width="36" height="116" rx="18" fill="#FFFFFF" stroke="#DDE7E3"/>
+  <text x="337" y="132" fill="#12332C" font-family="Arial" font-size="16" font-weight="700">+</text>
+  <line x1="334" y1="148" x2="350" y2="148" stroke="#DDE7E3"/>
+  <text x="340" y="176" fill="#12332C" font-family="Arial" font-size="16" font-weight="700">-</text>
+  <line x1="334" y1="192" x2="350" y2="192" stroke="#DDE7E3"/>
+  <text x="331" y="211" fill="#12332C" font-family="Arial" font-size="10" font-weight="700">归中</text>
+  <rect x="28" y="330" width="76" height="32" rx="16" fill="#FFFFFF"/><text x="49" y="351" fill="#12332C" font-family="Arial" font-size="12" font-weight="700">图层</text>
+  <rect x="112" y="330" width="76" height="32" rx="16" fill="#FFFFFF"/><text x="132" y="351" fill="#12332C" font-family="Arial" font-size="12" font-weight="700">收藏</text>
+  <rect x="196" y="330" width="76" height="32" rx="16" fill="#FFFFFF"/><text x="216" y="351" fill="#12332C" font-family="Arial" font-size="12" font-weight="700">分享</text>
+
+  <rect x="0" y="402" width="390" height="442" rx="30" fill="#FFFFFF"/>
+  <rect x="158" y="418" width="74" height="5" rx="2.5" fill="#D4DDD9"/>
+  <text x="24" y="458" fill="#12332C" font-family="Arial" font-size="21" font-weight="700">紧凑高效</text>
+  <rect x="286" y="432" width="72" height="30" rx="15" fill="#E8F7F2"/>
+  <text x="307" y="452" fill="#0B765E" font-family="Arial" font-size="12" font-weight="700">可执行</text>
+  <text x="24" y="482" fill="#667A74" font-family="Arial" font-size="12">5 点 · 3h52m · 移动 31min</text>
+  <rect x="24" y="504" width="104" height="34" rx="17" fill="#12332C"/><text x="51" y="526" fill="#FFFFFF" font-family="Arial" font-size="12" font-weight="700">路线</text>
+  <rect x="138" y="504" width="104" height="34" rx="17" fill="#F4F7F6"/><text x="165" y="526" fill="#667A74" font-family="Arial" font-size="12" font-weight="700">对比</text>
+  <rect x="252" y="504" width="104" height="34" rx="17" fill="#F4F7F6"/><text x="279" y="526" fill="#667A74" font-family="Arial" font-size="12" font-weight="700">操作</text>
+  <line x1="48" y1="574" x2="48" y2="760" stroke="#DDE7E3" stroke-width="3"/>
+  <circle cx="48" cy="576" r="12" fill="#2D6CDF"/><text x="74" y="572" fill="#12332C" font-family="Arial" font-size="14" font-weight="700">太古里街区</text><text x="74" y="594" fill="#667A74" font-family="Arial" font-size="12">16:00-16:45 · 长按可替换</text>
+  <circle cx="48" cy="660" r="12" fill="#EF7D38"/><text x="74" y="656" fill="#12332C" font-family="Arial" font-size="14" font-weight="700">无二泰式火锅</text><text x="74" y="678" fill="#667A74" font-family="Arial" font-size="12">16:53-17:43 · 复制店名</text>
+  <circle cx="48" cy="744" r="12" fill="#12A37F"/><text x="74" y="740" fill="#12332C" font-family="Arial" font-size="14" font-weight="700">东糠市街茶馆</text><text x="74" y="762" fill="#667A74" font-family="Arial" font-size="12">17:51-18:26 · 查看原因</text>
+  <rect x="24" y="786" width="106" height="36" rx="18" fill="#E9F3F0"/><text x="51" y="809" fill="#12332C" font-family="Arial" font-size="12" font-weight="700">复制</text>
+  <rect x="142" y="786" width="106" height="36" rx="18" fill="#E9F3F0"/><text x="169" y="809" fill="#12332C" font-family="Arial" font-size="12" font-weight="700">导出</text>
+  <rect x="260" y="786" width="106" height="36" rx="18" fill="#E9F3F0"/><text x="287" y="809" fill="#12332C" font-family="Arial" font-size="12" font-weight="700">分享</text>
+</svg>

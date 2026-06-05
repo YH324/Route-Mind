@@ -1,0 +1,851 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RouteMind 城市路线规划工作台草稿</title>
+  <style>
+    :root {
+      --bg: #f4f7f6;
+      --panel: #ffffff;
+      --panel-soft: #f8fbfa;
+      --line: #dde7e3;
+      --ink: #12332c;
+      --muted: #667a74;
+      --muted-2: #8aa09a;
+      --brand: #12a37f;
+      --brand-dark: #0b765e;
+      --blue: #2d6cdf;
+      --orange: #ef7d38;
+      --purple: #8b5cf6;
+      --yellow: #f5b544;
+      --danger: #d9534f;
+      --shadow: 0 18px 60px rgba(18, 51, 44, 0.12);
+      --radius-lg: 24px;
+      --radius-md: 18px;
+      --radius-sm: 14px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+      color: var(--ink);
+      background:
+        linear-gradient(135deg, rgba(18, 163, 127, 0.08), transparent 34%),
+        linear-gradient(315deg, rgba(45, 108, 223, 0.08), transparent 32%),
+        var(--bg);
+    }
+
+    button, textarea, select, input { font: inherit; }
+
+    .app-shell {
+      min-height: 100vh;
+      padding: 20px;
+      display: grid;
+      grid-template-columns: 300px minmax(460px, 1fr) 360px;
+      gap: 16px;
+    }
+
+    .panel {
+      background: rgba(255, 255, 255, 0.88);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px);
+    }
+
+    .planner {
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .brand-mark {
+      width: 42px;
+      height: 42px;
+      border-radius: 15px;
+      display: grid;
+      place-items: center;
+      color: #fff;
+      font-weight: 800;
+      background: var(--ink);
+    }
+
+    h1, h2, h3, p { margin: 0; }
+
+    h1 { font-size: 22px; line-height: 1.15; }
+    .caption { color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+    .query-box {
+      padding: 16px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+    }
+
+    .query-box label,
+    .field-label {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 116px;
+      resize: vertical;
+      border: 0;
+      outline: 0;
+      color: var(--ink);
+      background: transparent;
+      font-size: 15px;
+      line-height: 1.55;
+    }
+
+    .chips {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .chip {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 7px 10px;
+      background: var(--panel);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .chip.active {
+      color: #fff;
+      border-color: var(--ink);
+      background: var(--ink);
+    }
+
+    .mode-summary {
+      padding: 12px;
+      border: 1px solid #d8eae4;
+      border-radius: var(--radius-sm);
+      background: #eef8f5;
+      color: var(--brand-dark);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .metric {
+      padding: 13px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      background: var(--panel);
+    }
+
+    .metric span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .metric strong {
+      display: block;
+      margin-top: 5px;
+      font-size: 20px;
+      line-height: 1;
+    }
+
+    .primary-btn {
+      width: 100%;
+      border: 0;
+      border-radius: 16px;
+      padding: 14px 16px;
+      color: #fff;
+      background: var(--brand);
+      font-weight: 800;
+      cursor: pointer;
+      box-shadow: 0 12px 24px rgba(18, 163, 127, 0.22);
+    }
+
+    .quiet-links {
+      margin-top: auto;
+      display: grid;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .quiet-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding-top: 10px;
+      border-top: 1px solid var(--line);
+    }
+
+    .text-btn {
+      border: 0;
+      background: transparent;
+      color: var(--brand-dark);
+      font-size: 12px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    .map-panel {
+      position: relative;
+      overflow: hidden;
+      min-height: calc(100vh - 40px);
+      background: #eaf0ed;
+    }
+
+    .map-topbar {
+      position: absolute;
+      z-index: 3;
+      top: 20px;
+      left: 20px;
+      right: 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .map-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 42px;
+      padding: 0 14px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.92);
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 800;
+      box-shadow: 0 12px 30px rgba(18, 51, 44, 0.08);
+    }
+
+    .map-legend {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .legend-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--dot);
+    }
+
+    .map-canvas {
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(90deg, rgba(255,255,255,0.45) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(255,255,255,0.45) 1px, transparent 1px),
+        #eaf0ed;
+      background-size: 58px 58px;
+    }
+
+    .road {
+      position: absolute;
+      height: 12px;
+      border-radius: 999px;
+      background: #d5dfdb;
+      transform-origin: left center;
+      opacity: 0.86;
+    }
+
+    .road.r1 { left: 7%; top: 24%; width: 44%; transform: rotate(-16deg); }
+    .road.r2 { left: 42%; top: 20%; width: 42%; transform: rotate(12deg); }
+    .road.r3 { left: 8%; top: 64%; width: 52%; transform: rotate(18deg); }
+    .road.r4 { left: 48%; top: 55%; width: 42%; transform: rotate(-18deg); }
+    .road.r5 { left: 15%; top: 43%; width: 70%; transform: rotate(-4deg); height: 9px; }
+    .road.r6 { left: 32%; top: 11%; width: 62%; transform: rotate(72deg); height: 8px; }
+
+    .route-svg {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    .marker {
+      position: absolute;
+      z-index: 2;
+      width: 32px;
+      height: 32px;
+      border: 4px solid #fff;
+      border-radius: 50%;
+      background: var(--color);
+      transform: translate(-50%, -50%);
+      box-shadow: 0 10px 20px rgba(18, 51, 44, 0.22);
+      display: grid;
+      place-items: center;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .marker.start {
+      width: 34px;
+      height: 34px;
+      background: var(--ink);
+    }
+
+    .marker-label {
+      position: absolute;
+      z-index: 2;
+      transform: translate(-50%, 22px);
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.94);
+      box-shadow: 0 10px 24px rgba(18, 51, 44, 0.08);
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .radius-ring {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: min(62vw, 560px);
+      aspect-ratio: 1;
+      border: 1px dashed rgba(18, 163, 127, 0.42);
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+    }
+
+    .result-panel {
+      padding: 22px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      max-height: calc(100vh - 40px);
+      overflow: auto;
+    }
+
+    .section-title {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .section-title h2 {
+      font-size: 24px;
+      line-height: 1.2;
+    }
+
+    .status-badge {
+      padding: 7px 10px;
+      border-radius: 999px;
+      background: #eaf8f4;
+      color: var(--brand-dark);
+      font-size: 12px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .tabs {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      padding: 6px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--panel-soft);
+    }
+
+    .tab {
+      border: 0;
+      border-radius: 13px;
+      padding: 10px 6px;
+      color: var(--muted);
+      background: transparent;
+      font-size: 12px;
+      font-weight: 900;
+      cursor: pointer;
+    }
+
+    .tab.active {
+      color: #fff;
+      background: var(--ink);
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+    }
+
+    .stat {
+      min-width: 0;
+      padding: 11px 8px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel-soft);
+      text-align: center;
+    }
+
+    .stat strong {
+      display: block;
+      font-size: 15px;
+    }
+
+    .stat span {
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 800;
+    }
+
+    .timeline {
+      position: relative;
+      display: grid;
+      gap: 12px;
+    }
+
+    .timeline::before {
+      content: "";
+      position: absolute;
+      left: 18px;
+      top: 22px;
+      bottom: 22px;
+      width: 3px;
+      border-radius: 99px;
+      background: var(--line);
+    }
+
+    .step {
+      position: relative;
+      display: grid;
+      grid-template-columns: 42px 1fr;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .step-dot {
+      position: relative;
+      z-index: 1;
+      width: 38px;
+      height: 38px;
+      border: 4px solid #fff;
+      border-radius: 50%;
+      background: var(--color);
+      display: grid;
+      place-items: center;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 900;
+      box-shadow: 0 8px 18px rgba(18, 51, 44, 0.14);
+    }
+
+    .step-card {
+      padding: 13px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--panel);
+    }
+
+    .step-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 9px;
+    }
+
+    .step-name {
+      font-size: 14px;
+      font-weight: 900;
+      line-height: 1.35;
+    }
+
+    .score {
+      color: #9a620a;
+      background: #fff5d9;
+      border-radius: 999px;
+      padding: 4px 7px;
+      font-size: 11px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .step-meta {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .mini-pill {
+      padding: 5px 7px;
+      border-radius: 999px;
+      background: var(--panel-soft);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .mini-pill.open { color: var(--brand-dark); background: #e8f7f2; }
+
+    .move {
+      margin: -4px 0 2px 54px;
+      color: var(--muted-2);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .why {
+      padding: 15px;
+      border-radius: 18px;
+      background: #eef8f5;
+      border: 1px solid #d7ebe4;
+    }
+
+    .why h3 {
+      margin-bottom: 10px;
+      font-size: 14px;
+    }
+
+    .why ul {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--brand-dark);
+      font-size: 12px;
+      line-height: 1.7;
+    }
+
+    .state-strip {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+
+    .state-card {
+      padding: 11px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel-soft);
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    .state-card strong {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--ink);
+      font-size: 12px;
+    }
+
+    @media (max-width: 1120px) {
+      .app-shell {
+        grid-template-columns: 300px 1fr;
+      }
+
+      .result-panel {
+        grid-column: 1 / -1;
+        max-height: none;
+      }
+
+      .map-panel {
+        min-height: 620px;
+      }
+    }
+
+    @media (max-width: 720px) {
+      body { background: var(--bg); }
+
+      .app-shell {
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .planner {
+        padding: 16px;
+      }
+
+      .brand {
+        align-items: flex-start;
+      }
+
+      .query-box textarea {
+        min-height: 84px;
+      }
+
+      .map-panel {
+        min-height: 340px;
+        border-radius: 22px;
+      }
+
+      .map-topbar {
+        top: 12px;
+        left: 12px;
+        right: 12px;
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .map-legend {
+        justify-content: flex-start;
+      }
+
+      .radius-ring {
+        width: 300px;
+      }
+
+      .result-panel {
+        padding: 18px;
+        border-radius: 24px 24px 0 0;
+      }
+
+      .section-title h2 {
+        font-size: 21px;
+      }
+
+      .stats,
+      .state-strip {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="app-shell">
+    <aside class="panel planner" aria-label="路线规划输入">
+      <div class="brand">
+        <div>
+          <h1>RouteMind</h1>
+          <p class="caption">成都城市路线规划工作台</p>
+        </div>
+        <div class="brand-mark">R</div>
+      </div>
+
+      <section class="query-box">
+        <label for="goal">今天想怎么走？</label>
+        <textarea id="goal">春熙路附近，下午四点想吃火锅，再找一个舒服的地方逛一会儿，不要走太远。</textarea>
+      </section>
+
+      <section>
+        <div class="field-label">用户模式</div>
+        <div class="chips" aria-label="用户模式">
+          <button class="chip active" type="button">游客</button>
+          <button class="chip" type="button">出差</button>
+          <button class="chip" type="button">居民</button>
+        </div>
+      </section>
+
+      <div class="mode-summary">
+        游客模式：景点和特色餐饮优先，允许 3-5km 范围移动，自动控制同类地点重复。
+      </div>
+
+      <section class="metric-grid">
+        <div class="metric"><span>搜索半径</span><strong>3km</strong></div>
+        <div class="metric"><span>时间预算</span><strong>4h</strong></div>
+        <div class="metric"><span>出行方式</span><strong>步行</strong></div>
+        <div class="metric"><span>单段上限</span><strong>30min</strong></div>
+      </section>
+
+      <section class="query-box">
+        <div class="field-label">中心位置</div>
+        <p style="font-size:14px;font-weight:800;margin-bottom:6px;">春熙路商圈</p>
+        <p class="caption">104.082, 30.657。精确定位只用于本次规划，不保存轨迹。</p>
+      </section>
+
+      <button class="primary-btn" type="button">开始规划路线</button>
+
+      <section class="quiet-links" aria-label="隐私与会话控制">
+        <div class="quiet-row">
+          <span>会话记忆</span>
+          <button class="text-btn" type="button">清除</button>
+        </div>
+        <div class="quiet-row">
+          <span>长期轻画像</span>
+          <button class="text-btn" type="button">清除</button>
+        </div>
+      </section>
+    </aside>
+
+    <section class="panel map-panel" aria-label="路线地图">
+      <div class="map-canvas">
+        <div class="radius-ring"></div>
+        <div class="road r1"></div>
+        <div class="road r2"></div>
+        <div class="road r3"></div>
+        <div class="road r4"></div>
+        <div class="road r5"></div>
+        <div class="road r6"></div>
+        <svg class="route-svg" viewBox="0 0 1000 760" preserveAspectRatio="none" aria-hidden="true">
+          <path id="routePath" d="M210 455 L350 345 L515 410 L662 300 L810 380" stroke="#12A37F" stroke-width="9" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <div class="marker start" style="left:21%;top:60%;--color:var(--ink);">起</div>
+        <div class="marker-label" style="left:21%;top:60%;">起点</div>
+        <div class="marker poi poi-1" style="left:35%;top:45%;--color:var(--blue);">1</div>
+        <div class="marker-label label-1" style="left:35%;top:45%;">太古里</div>
+        <div class="marker poi poi-2" style="left:51.5%;top:54%;--color:var(--orange);">2</div>
+        <div class="marker-label label-2" style="left:51.5%;top:54%;">火锅</div>
+        <div class="marker poi poi-3" style="left:66.2%;top:39.5%;--color:var(--brand);">3</div>
+        <div class="marker-label label-3" style="left:66.2%;top:39.5%;">茶馆</div>
+        <div class="marker poi poi-4" style="left:81%;top:50%;--color:var(--purple);">4</div>
+        <div class="marker-label label-4" style="left:81%;top:50%;">夜逛</div>
+      </div>
+      <div class="map-topbar">
+        <div class="map-pill">春熙路 3km · 道路级路线</div>
+        <div class="map-legend">
+          <div class="map-pill"><span class="legend-dot" style="--dot:var(--blue)"></span>景点</div>
+          <div class="map-pill"><span class="legend-dot" style="--dot:var(--orange)"></span>餐饮</div>
+          <div class="map-pill"><span class="legend-dot" style="--dot:var(--brand)"></span>休闲</div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="panel result-panel" aria-label="路线结果">
+      <div class="section-title">
+        <div>
+          <h2 id="variantTitle">紧凑高效</h2>
+          <p id="variantDesc" class="caption">在有限时间内串联高价值地点，减少折返和空走。</p>
+        </div>
+        <span class="status-badge">可执行</span>
+      </div>
+
+      <nav class="tabs" aria-label="方案切换">
+        <button class="tab active" type="button" data-variant="0">紧凑</button>
+        <button class="tab" type="button" data-variant="1">慢游</button>
+        <button class="tab" type="button" data-variant="2">美食</button>
+      </nav>
+
+      <section class="stats" id="stats"></section>
+      <section class="timeline" id="timeline"></section>
+
+      <section class="why">
+        <h3>为什么推荐这条路线</h3>
+        <ul id="whyList"></ul>
+      </section>
+
+      <section class="state-strip">
+        <div class="state-card"><strong>单点推荐</strong>只找火锅或咖啡时，地图展示多个候选点，不强行串线。</div>
+        <div class="state-card"><strong>简单路线</strong>吃完再逛这类需求，优先展示 2-3 个地点的顺序。</div>
+        <div class="state-card"><strong>无结果降级</strong>提示半径、营业时间、单段移动约束，并给出修正入口。</div>
+      </section>
+    </aside>
+  </main>
+
+  <script>
+    const variants = [
+      {
+        name: "紧凑高效",
+        desc: "在有限时间内串联高价值地点，减少折返和空走。",
+        stats: ["5点", "3h52m", "31min", "97%"],
+        statLabels: ["POI", "总耗时", "移动", "利用率"],
+        routePath: "M210 455 L350 345 L515 410 L662 300 L810 380",
+        steps: [
+          ["太古里街区", "景点", "16:00-16:45", "GT 4.5", "营业中", "var(--blue)"],
+          ["无二泰式火锅", "火锅", "16:53-17:43", "GT 4.6", "营业中", "var(--orange)", "620m / 8min"],
+          ["东糠市街茶馆", "茶馆", "17:51-18:26", "GT 4.4", "营业中", "var(--brand)", "540m / 8min"],
+          ["春熙路夜逛", "休闲", "18:35-19:15", "GT 4.3", "顺路", "var(--purple)", "710m / 9min"]
+        ],
+        why: ["火锅命中用户显式偏好", "所有地点到达时均在营业时段", "单段移动低于游客模式 30 分钟上限", "景点、餐饮、休闲类型不重复，路线更完整"]
+      },
+      {
+        name: "休闲慢游",
+        desc: "减少站点密度，把更多时间留给街区和茶馆。",
+        stats: ["4点", "3h40m", "24min", "92%"],
+        statLabels: ["POI", "总耗时", "移动", "利用率"],
+        routePath: "M210 455 L360 332 L610 348 L755 432",
+        steps: [
+          ["大慈寺周边", "景点", "16:00-16:55", "GT 4.5", "营业中", "var(--blue)"],
+          ["宽坐茶空间", "茶馆", "17:04-17:54", "GT 4.4", "少走路", "var(--brand)", "690m / 9min"],
+          ["锦江小吃街", "小吃", "18:02-18:32", "GT 4.3", "营业中", "var(--orange)", "520m / 8min"],
+          ["IFS 夜景点", "休闲", "18:39-19:40", "GT 4.2", "拍照友好", "var(--purple)", "480m / 7min"]
+        ],
+        why: ["减少站点数量，降低赶路感", "优先安排白天更适合游览的地点", "茶馆停留更长，符合慢游模式", "移动时间低于紧凑方案"]
+      },
+      {
+        name: "美食探店",
+        desc: "围绕火锅和小吃展开，保留一个轻量休闲点消化。",
+        stats: ["5点", "3h58m", "29min", "99%"],
+        statLabels: ["POI", "总耗时", "移动", "利用率"],
+        routePath: "M210 455 L430 414 L540 360 L655 410 L790 330",
+        steps: [
+          ["香香巷小吃", "小吃", "16:00-16:25", "GT 4.4", "营业中", "var(--orange)"],
+          ["无二泰式火锅", "火锅", "16:33-17:23", "GT 4.6", "营业中", "var(--orange)", "640m / 8min"],
+          ["手作甜品店", "甜品", "17:31-17:56", "GT 4.4", "营业中", "var(--orange)", "520m / 8min"],
+          ["街区散步点", "休闲", "18:05-18:45", "GT 4.2", "顺路", "var(--purple)", "760m / 9min"]
+        ],
+        why: ["餐饮权重最高，符合“想吃火锅”", "同类餐饮控制在可接受范围内", "穿插散步点，避免连续进食体验单一", "路线围绕春熙路核心区，移动成本可控"]
+      }
+    ];
+
+    const tabs = Array.from(document.querySelectorAll(".tab"));
+    const title = document.getElementById("variantTitle");
+    const desc = document.getElementById("variantDesc");
+    const stats = document.getElementById("stats");
+    const timeline = document.getElementById("timeline");
+    const whyList = document.getElementById("whyList");
+    const routePath = document.getElementById("routePath");
+
+    function renderVariant(index) {
+      const variant = variants[index];
+      title.textContent = variant.name;
+      desc.textContent = variant.desc;
+      routePath.setAttribute("d", variant.routePath);
+      stats.innerHTML = variant.stats.map((value, i) => `
+        <div class="stat"><strong>${value}</strong><span>${variant.statLabels[i]}</span></div>
+      `).join("");
+      timeline.innerHTML = variant.steps.map((step, i) => `
+        ${step[6] ? `<div class="move">${step[6]}</div>` : ""}
+        <article class="step">
+          <div class="step-dot" style="--color:${step[5]}">${i + 1}</div>
+          <div class="step-card">
+            <div class="step-head">
+              <div class="step-name">${step[0]}</div>
+              <div class="score">${step[3]}</div>
+            </div>
+            <div class="step-meta">
+              <span class="mini-pill">${step[1]}</span>
+              <span class="mini-pill">${step[2]}</span>
+              <span class="mini-pill open">${step[4]}</span>
+            </div>
+          </div>
+        </article>
+      `).join("");
+      whyList.innerHTML = variant.why.map(item => `<li>${item}</li>`).join("");
+      tabs.forEach((tab, i) => tab.classList.toggle("active", i === index));
+    }
+
+    tabs.forEach(tab => {
+      tab.addEventListener("click", () => renderVariant(Number(tab.dataset.variant)));
+    });
+
+    renderVariant(0);
+  </script>
+</body>
+</html>

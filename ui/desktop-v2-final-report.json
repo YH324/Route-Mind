@@ -1,0 +1,19 @@
+{
+  "iteration": "typography",
+  "errors": [],
+  "metrics": {
+    "scrollWidth": 1440,
+    "clientWidth": 1440,
+    "scrollHeight": 900,
+    "clientHeight": 900,
+    "fits": {
+      ".left": true,
+      ".map-panel": true,
+      ".right": true,
+      ".primary": true,
+      ".why-box": true,
+      ".guide-card": true
+    },
+    "visibleOverflow": []
+  }
+}

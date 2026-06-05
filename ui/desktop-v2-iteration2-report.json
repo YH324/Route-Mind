@@ -1,0 +1,23 @@
+{
+  "iteration": 2,
+  "errors": [],
+  "enMap": "Chunxi 3km · illustrated map",
+  "nightClass": "workspace night",
+  "guideVisible": false,
+  "activeTitle": "美食探店",
+  "metrics": {
+    "scrollWidth": 1440,
+    "clientWidth": 1440,
+    "scrollHeight": 900,
+    "clientHeight": 900,
+    "fits": {
+      ".left": true,
+      ".map-panel": true,
+      ".right": true,
+      ".primary": true,
+      ".why-box": true
+    },
+    "visibleOverflow": [],
+    "guideExists": true
+  }
+}

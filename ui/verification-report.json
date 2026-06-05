@@ -1,0 +1,40 @@
+[
+  {
+    "viewport": {
+      "name": "desktop",
+      "width": 1440,
+      "height": 900
+    },
+    "errors": [],
+    "metrics": {
+      "title": "RouteMind 城市路线规划工作台草稿",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "bodyHeight": 936,
+      "activeTab": "紧凑",
+      "statCount": 4,
+      "stepCount": 4,
+      "overflowEls": []
+    },
+    "switched": "休闲慢游"
+  },
+  {
+    "viewport": {
+      "name": "mobile",
+      "width": 390,
+      "height": 844
+    },
+    "errors": [],
+    "metrics": {
+      "title": "RouteMind 城市路线规划工作台草稿",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "bodyHeight": 2403,
+      "activeTab": "紧凑",
+      "statCount": 4,
+      "stepCount": 4,
+      "overflowEls": []
+    },
+    "switched": "休闲慢游"
+  }
+]

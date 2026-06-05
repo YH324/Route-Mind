@@ -1,0 +1,42 @@
+<svg width="390" height="844" viewBox="0 0 390 844" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">RouteMind mobile result sketch</title>
+  <desc id="desc">Mobile route planner sketch with query bar, map preview, and bottom timeline sheet.</desc>
+  <rect width="390" height="844" fill="#F4F7F6"/>
+  <rect x="16" y="18" width="358" height="54" rx="20" fill="#FFFFFF" stroke="#DDE7E3"/>
+  <text x="38" y="51" fill="#12332C" font-family="Arial, sans-serif" font-size="15" font-weight="700">春熙路附近，下午四点想吃火锅</text>
+  <rect x="16" y="88" width="358" height="44" rx="22" fill="#E9F3F0"/>
+  <rect x="22" y="94" width="84" height="32" rx="16" fill="#12332C"/>
+  <text x="50" y="115" fill="#FFFFFF" font-family="Arial, sans-serif" font-size="13" font-weight="700">游客</text>
+  <text x="142" y="115" fill="#4E6660" font-family="Arial, sans-serif" font-size="13">3km</text>
+  <text x="214" y="115" fill="#4E6660" font-family="Arial, sans-serif" font-size="13">4h</text>
+  <text x="282" y="115" fill="#4E6660" font-family="Arial, sans-serif" font-size="13">步行</text>
+
+  <rect x="16" y="148" width="358" height="280" rx="24" fill="#EAF0ED" stroke="#D6E0DC"/>
+  <path d="M44 230C94 200 132 247 182 214C245 173 285 212 348 178" stroke="#D7E1DD" stroke-width="12" stroke-linecap="round"/>
+  <path d="M44 355C110 318 154 370 226 326C286 288 326 309 350 286" stroke="#D7E1DD" stroke-width="10" stroke-linecap="round"/>
+  <path d="M76 328L132 284L198 312L260 254L320 292" stroke="#12A37F" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="76" cy="328" r="10" fill="#12332C" stroke="#FFFFFF" stroke-width="4"/>
+  <circle cx="132" cy="284" r="11" fill="#2D6CDF" stroke="#FFFFFF" stroke-width="4"/>
+  <circle cx="198" cy="312" r="11" fill="#EF7D38" stroke="#FFFFFF" stroke-width="4"/>
+  <circle cx="260" cy="254" r="11" fill="#12A37F" stroke="#FFFFFF" stroke-width="4"/>
+  <circle cx="320" cy="292" r="11" fill="#8B5CF6" stroke="#FFFFFF" stroke-width="4"/>
+  <rect x="34" y="166" width="154" height="34" rx="17" fill="#FFFFFF"/>
+  <text x="52" y="188" fill="#12332C" font-family="Arial, sans-serif" font-size="12" font-weight="700">道路级路线预览</text>
+
+  <rect x="0" y="452" width="390" height="392" rx="30" fill="#FFFFFF"/>
+  <rect x="158" y="468" width="74" height="5" rx="2.5" fill="#D4DDD9"/>
+  <text x="24" y="510" fill="#12332C" font-family="Arial, sans-serif" font-size="22" font-weight="700">紧凑高效</text>
+  <text x="24" y="535" fill="#667A74" font-family="Arial, sans-serif" font-size="12">5 个地点 · 3h52m · 移动 31min · 利用率 97%</text>
+  <rect x="24" y="556" width="96" height="30" rx="15" fill="#12332C"/>
+  <text x="48" y="576" fill="#FFFFFF" font-family="Arial, sans-serif" font-size="12" font-weight="700">路线</text>
+  <rect x="128" y="556" width="96" height="30" rx="15" fill="#F4F7F6"/>
+  <text x="152" y="576" fill="#667A74" font-family="Arial, sans-serif" font-size="12">地图</text>
+  <rect x="232" y="556" width="118" height="30" rx="15" fill="#F4F7F6"/>
+  <text x="256" y="576" fill="#667A74" font-family="Arial, sans-serif" font-size="12">解释</text>
+  <line x1="48" y1="624" x2="48" y2="794" stroke="#DCE7E2" stroke-width="3"/>
+  <g font-family="Arial, sans-serif">
+    <circle cx="48" cy="628" r="12" fill="#2D6CDF"/><text x="74" y="624" fill="#12332C" font-size="14" font-weight="700">太古里街区</text><text x="74" y="646" fill="#7A8B86" font-size="12">16:00-16:45 · 景点 · GT 4.5</text>
+    <circle cx="48" cy="704" r="12" fill="#EF7D38"/><text x="74" y="700" fill="#12332C" font-size="14" font-weight="700">无二泰式火锅</text><text x="74" y="722" fill="#7A8B86" font-size="12">16:53-17:43 · 火锅 · 营业中</text>
+    <circle cx="48" cy="780" r="12" fill="#12A37F"/><text x="74" y="776" fill="#12332C" font-size="14" font-weight="700">东糠市街茶馆</text><text x="74" y="798" fill="#7A8B86" font-size="12">17:51-18:26 · 茶馆 · 少走路</text>
+  </g>
+</svg>

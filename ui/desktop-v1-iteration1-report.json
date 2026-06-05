@@ -1,0 +1,16 @@
+{
+  "iteration": 1,
+  "errors": [],
+  "enTitle": "Efficient",
+  "zhTitleAfterSwitch": "休闲慢游",
+  "toastVisible": true,
+  "metrics": {
+    "scrollWidth": 1440,
+    "clientWidth": 1440,
+    "scrollHeight": 900,
+    "clientHeight": 900,
+    "visibleOverflow": [],
+    "variantCards": 3,
+    "stops": 4
+  }
+}

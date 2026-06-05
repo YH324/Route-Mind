@@ -1,0 +1,65 @@
+<svg width="1200" height="760" viewBox="0 0 1200 760" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">RouteMind desktop workspace sketch</title>
+  <desc id="desc">Three-column web UI sketch with planning controls, central map, and route timeline.</desc>
+  <rect width="1200" height="760" fill="#F4F7F6"/>
+  <rect x="24" y="22" width="1152" height="716" rx="28" fill="#FFFFFF" stroke="#DDE7E3"/>
+
+  <rect x="50" y="50" width="252" height="660" rx="18" fill="#F8FBFA" stroke="#DFE9E5"/>
+  <text x="72" y="86" fill="#12332C" font-family="Arial, sans-serif" font-size="22" font-weight="700">RouteMind</text>
+  <text x="72" y="111" fill="#667A74" font-family="Arial, sans-serif" font-size="12">AI 城市路线规划</text>
+  <rect x="72" y="136" width="208" height="110" rx="14" fill="#FFFFFF" stroke="#DCE7E2"/>
+  <text x="90" y="164" fill="#12332C" font-family="Arial, sans-serif" font-size="13" font-weight="700">今天想怎么走？</text>
+  <text x="90" y="190" fill="#7A8B86" font-family="Arial, sans-serif" font-size="12">春熙路附近，下午四点</text>
+  <text x="90" y="210" fill="#7A8B86" font-family="Arial, sans-serif" font-size="12">想吃火锅，再逛一会儿</text>
+  <rect x="72" y="262" width="208" height="42" rx="21" fill="#E9F3F0"/>
+  <rect x="77" y="267" width="62" height="32" rx="16" fill="#12332C"/>
+  <text x="93" y="288" fill="#FFFFFF" font-family="Arial, sans-serif" font-size="12" font-weight="700">游客</text>
+  <text x="153" y="288" fill="#4E6660" font-family="Arial, sans-serif" font-size="12">出差</text>
+  <text x="217" y="288" fill="#4E6660" font-family="Arial, sans-serif" font-size="12">居民</text>
+  <rect x="72" y="326" width="98" height="58" rx="12" fill="#FFFFFF" stroke="#DFE9E5"/>
+  <text x="88" y="350" fill="#7A8B86" font-family="Arial, sans-serif" font-size="11">半径</text>
+  <text x="88" y="371" fill="#12332C" font-family="Arial, sans-serif" font-size="18" font-weight="700">3km</text>
+  <rect x="182" y="326" width="98" height="58" rx="12" fill="#FFFFFF" stroke="#DFE9E5"/>
+  <text x="198" y="350" fill="#7A8B86" font-family="Arial, sans-serif" font-size="11">预算</text>
+  <text x="198" y="371" fill="#12332C" font-family="Arial, sans-serif" font-size="18" font-weight="700">4h</text>
+  <rect x="72" y="402" width="208" height="62" rx="12" fill="#FFFFFF" stroke="#DFE9E5"/>
+  <text x="90" y="428" fill="#7A8B86" font-family="Arial, sans-serif" font-size="12">定位</text>
+  <text x="90" y="448" fill="#12332C" font-family="Arial, sans-serif" font-size="14" font-weight="700">春熙路商圈</text>
+  <rect x="72" y="488" width="208" height="46" rx="14" fill="#12A37F"/>
+  <text x="132" y="517" fill="#FFFFFF" font-family="Arial, sans-serif" font-size="14" font-weight="700">开始规划</text>
+  <text x="72" y="666" fill="#7A8B86" font-family="Arial, sans-serif" font-size="11">会话/画像可随时清除</text>
+
+  <rect x="326" y="50" width="522" height="660" rx="18" fill="#EAF0ED" stroke="#D6E0DC"/>
+  <path d="M350 188C455 138 494 220 594 164C707 100 760 176 824 124" stroke="#D7E1DD" stroke-width="16" stroke-linecap="round"/>
+  <path d="M364 502C470 430 522 542 642 462C730 403 758 448 820 407" stroke="#D7E1DD" stroke-width="14" stroke-linecap="round"/>
+  <path d="M376 622C486 568 594 616 718 548C766 522 797 530 822 512" stroke="#D7E1DD" stroke-width="10" stroke-linecap="round"/>
+  <path d="M397 366L482 314L570 356L662 288L760 334" stroke="#12A37F" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="397" cy="366" r="12" fill="#12332C" stroke="#FFFFFF" stroke-width="4"/>
+  <circle cx="482" cy="314" r="13" fill="#2D6CDF" stroke="#FFFFFF" stroke-width="4"/>
+  <circle cx="570" cy="356" r="13" fill="#EF7D38" stroke="#FFFFFF" stroke-width="4"/>
+  <circle cx="662" cy="288" r="13" fill="#12A37F" stroke="#FFFFFF" stroke-width="4"/>
+  <circle cx="760" cy="334" r="13" fill="#8B5CF6" stroke="#FFFFFF" stroke-width="4"/>
+  <rect x="350" y="74" width="208" height="42" rx="21" fill="#FFFFFF" stroke="#DCE7E2"/>
+  <text x="370" y="100" fill="#12332C" font-family="Arial, sans-serif" font-size="13" font-weight="700">地图：春熙路 3km</text>
+  <rect x="660" y="74" width="160" height="42" rx="21" fill="#FFFFFF" stroke="#DCE7E2"/>
+  <text x="681" y="100" fill="#667A74" font-family="Arial, sans-serif" font-size="13">道路级路线</text>
+
+  <rect x="872" y="50" width="278" height="660" rx="18" fill="#F8FBFA" stroke="#DFE9E5"/>
+  <text x="898" y="88" fill="#12332C" font-family="Arial, sans-serif" font-size="20" font-weight="700">紧凑高效</text>
+  <text x="898" y="114" fill="#667A74" font-family="Arial, sans-serif" font-size="12">5 个地点 · 3h52m · 移动 31min</text>
+  <rect x="898" y="136" width="72" height="30" rx="15" fill="#12332C"/>
+  <text x="917" y="156" fill="#FFFFFF" font-family="Arial, sans-serif" font-size="12">高效</text>
+  <rect x="978" y="136" width="72" height="30" rx="15" fill="#FFFFFF" stroke="#DCE7E2"/>
+  <text x="997" y="156" fill="#667A74" font-family="Arial, sans-serif" font-size="12">慢游</text>
+  <rect x="1058" y="136" width="66" height="30" rx="15" fill="#FFFFFF" stroke="#DCE7E2"/>
+  <text x="1074" y="156" fill="#667A74" font-family="Arial, sans-serif" font-size="12">美食</text>
+  <line x1="918" y1="202" x2="918" y2="628" stroke="#DCE7E2" stroke-width="3"/>
+  <g font-family="Arial, sans-serif">
+    <circle cx="918" cy="218" r="13" fill="#2D6CDF"/><text x="946" y="214" fill="#12332C" font-size="14" font-weight="700">太古里街区</text><text x="946" y="235" fill="#7A8B86" font-size="12">16:00-16:45 · 景点 · GT 4.5</text>
+    <circle cx="918" cy="304" r="13" fill="#EF7D38"/><text x="946" y="300" fill="#12332C" font-size="14" font-weight="700">无二泰式火锅</text><text x="946" y="321" fill="#7A8B86" font-size="12">16:53-17:43 · 火锅 · 营业中</text>
+    <circle cx="918" cy="390" r="13" fill="#12A37F"/><text x="946" y="386" fill="#12332C" font-size="14" font-weight="700">东糠市街茶馆</text><text x="946" y="407" fill="#7A8B86" font-size="12">17:51-18:26 · 茶馆 · 少走路</text>
+    <circle cx="918" cy="476" r="13" fill="#8B5CF6"/><text x="946" y="472" fill="#12332C" font-size="14" font-weight="700">春熙路夜逛</text><text x="946" y="493" fill="#7A8B86" font-size="12">18:35-19:15 · 休闲 · 顺路</text>
+  </g>
+  <rect x="898" y="644" width="226" height="40" rx="14" fill="#E9F3F0"/>
+  <text x="928" y="669" fill="#12332C" font-family="Arial, sans-serif" font-size="13" font-weight="700">为什么推荐这条路线</text>
+</svg>

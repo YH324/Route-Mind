@@ -1,0 +1,16 @@
+{
+  "iteration": 2,
+  "errors": [],
+  "metrics": {
+    "scrollWidth": 1440,
+    "clientWidth": 1440,
+    "scrollHeight": 900,
+    "clientHeight": 900,
+    "primaryVisible": true,
+    "whyVisible": false,
+    "rightFits": true,
+    "leftFits": true,
+    "activeVariant": "美食探店",
+    "visibleOverflow": []
+  }
+}
