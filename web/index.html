@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>智能路线规划</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="hero-copy">
+        <h1>智能路线规划</h1>
+        <p class="subtitle">输入自然语言目标，自动生成带时间轴的可执行路线方案</p>
+      </div>
+      <div class="hero-panel">
+        <label class="field">
+          <span>你的目标</span>
+          <textarea id="goalInput" rows="3" placeholder="例如：春熙路附近，下午四点想吃火锅">春熙路附近，下午四点想吃火锅</textarea>
+        </label>
+        <div class="controls">
+          <label class="field compact">
+            <span>会话ID</span>
+            <input id="sessionInput" type="text" value="demo-session" placeholder="demo-session">
+          </label>
+          <label class="field compact">
+            <span>用户ID</span>
+            <input id="userInput" type="text" value="demo-user" placeholder="可选">
+          </label>
+          <label class="field compact">
+            <span>用户模式</span>
+            <select id="modeSelect">
+              <option value="tourist" selected>游客</option>
+              <option value="business">出差</option>
+              <option value="resident">居民</option>
+            </select>
+          </label>
+          <label class="field compact">
+            <span>位置</span>
+            <select id="centerSelect">
+              <option value="chunxi">春熙路</option>
+              <option value="chengdu">天府广场</option>
+            </select>
+          </label>
+          <label class="field compact">
+            <span>搜索半径</span>
+            <select id="radiusSelect">
+              <option value="2000">2km</option>
+              <option value="3000" selected>3km</option>
+              <option value="5000">5km</option>
+            </select>
+          </label>
+          <div class="field compact">
+            <span>定位</span>
+            <button id="locateButton" class="secondary" type="button">使用当前位置</button>
+          </div>
+        </div>
+        <div id="locationText" class="location-box">默认：春熙路 (104.082, 30.657)</div>
+        <div class="inline-actions">
+          <button id="clearSessionButton" class="secondary" type="button">清除会话记忆</button>
+          <button id="clearProfileButton" class="secondary" type="button">清除长期画像</button>
+        </div>
+        <button id="runButton" class="primary">开始规划</button>
+        <p id="statusText" class="status">待命中</p>
+      </div>
+    </section>
+
+    <section id="resultSection" class="results" hidden>
+      <div class="result-header">
+        <h2 id="resultTitle">规划结果</h2>
+        <div id="resultMeta" class="meta"></div>
+      </div>
+
+      <div class="map-container">
+        <div id="map"></div>
+      </div>
+
+      <div id="variantTabs" class="variant-tabs"></div>
+
+      <div id="variantPanels" class="variant-panels"></div>
+
+      <div class="perf-bar">
+        数据加载 <span id="loadMs">-</span>ms | 路线规划 <span id="planMs">-</span>ms | 总计 <span id="totalMs">-</span>ms
+      </div>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="/app.js"></script>
+</body>
+</html>
