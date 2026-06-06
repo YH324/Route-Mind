@@ -15,11 +15,7 @@ import os
 import sys
 import time
 import uuid
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import socketserver
-
-class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
-    daemon_threads = True
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from app_service import run_agent
