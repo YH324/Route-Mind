@@ -19,6 +19,12 @@ SERVICE_AREA = {
     "city": "成都",
     "districts": ["武侯区", "锦江区"],
     "description": "当前数据覆盖成都武侯区、锦江区，暂不支持其他城市或区县。",
+    "bounds": {
+        "min_lng": 103.985,
+        "max_lng": 104.145,
+        "min_lat": 30.565,
+        "max_lat": 30.705,
+    },
 }
 
 # 城市坐标映射
@@ -103,6 +109,16 @@ def _coerce_location(payload, center):
     return lat, lng
 
 
+def _location_outside_service_area(lat, lng):
+    bounds = SERVICE_AREA["bounds"]
+    return (
+        lng < bounds["min_lng"]
+        or lng > bounds["max_lng"]
+        or lat < bounds["min_lat"]
+        or lat > bounds["max_lat"]
+    )
+
+
 def _normalize_payload(payload):
     if not isinstance(payload, dict):
         return None, {"ok": False, "error": "请求体必须是 JSON object", "error_code": "INVALID_PAYLOAD"}
@@ -129,6 +145,13 @@ def _normalize_payload(payload):
     center = CITY_CENTERS.get(center_key, CITY_CENTERS["chengdu"])
     has_explicit_center = payload.get("center_lat") is not None or payload.get("center_lng") is not None
     center_lat, center_lng = _coerce_location(payload, center)
+    if has_explicit_center and _location_outside_service_area(center_lat, center_lng):
+        return None, {
+            "ok": False,
+            "error": "当前位置暂不在服务范围内。{}".format(SERVICE_AREA["description"]),
+            "error_code": "UNSUPPORTED_SERVICE_AREA",
+            "service_area": SERVICE_AREA,
+        }
 
     normalized = {
         "goal": goal,

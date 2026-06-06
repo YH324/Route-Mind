@@ -32,6 +32,22 @@ class TestBackendModelContract(unittest.TestCase):
             self.assertEqual(response["error_code"], "UNSUPPORTED_SERVICE_AREA")
             self.assertEqual(response["service_area"]["districts"], ["武侯区", "锦江区"])
 
+    def test_explicit_location_outside_service_area_is_rejected(self):
+        response = run_agent(
+            {
+                "goal": "附近吃火锅",
+                "city": "chengdu",
+                "center_lng": 113.319,
+                "center_lat": 23.109,
+                "radius": 3000,
+                "user_mode": "tourist",
+            },
+            request_id="unsupported-location-contract-test",
+        )
+        self.assertFalse(response["ok"], response)
+        self.assertEqual(response["error_code"], "UNSUPPORTED_SERVICE_AREA")
+        self.assertIn("bounds", response["service_area"])
+
     def test_local_landmark_mentions_recenter_request(self):
         response = run_agent(
             {

@@ -124,6 +124,7 @@ const I18N = {
     serviceKicker: "服务范围", serviceTitle: "当前支持成都武侯区与锦江区",
     serviceBody: "RouteMind 目前使用成都武侯区、锦江区本地数据进行规划。其他城市和区县暂不支持，系统会在查询时提示。",
     serviceAccept: "我知道了",
+    mobilePlan: "规划", mobileMap: "地图", mobileResult: "结果",
   },
   en: {
     eyebrow: "Chengdu local route planner", goalLabel: "What do you want to do?",
@@ -163,6 +164,7 @@ const I18N = {
     serviceKicker: "Service Area", serviceTitle: "Currently supports Wuhou and Jinjiang, Chengdu",
     serviceBody: "RouteMind currently plans with local data from Wuhou and Jinjiang districts in Chengdu. Other cities and districts are not supported yet.",
     serviceAccept: "Got it",
+    mobilePlan: "Plan", mobileMap: "Map", mobileResult: "Result",
   },
 };
 
@@ -180,6 +182,7 @@ let startLayer = null;
 let currentBounds = null;
 let progressTimer = null;
 let toastTimer = null;
+let currentMobileView = "plan";
 
 function t(key) { return I18N[currentLang][key] || I18N.zh[key] || key; }
 function escapeHtml(v) { return String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
@@ -201,6 +204,21 @@ function setStatus(text) {
 function showToast(text) { toastEl.textContent = text; toastEl.classList.add("show"); clearTimeout(toastTimer); toastTimer = setTimeout(() => toastEl.classList.remove("show"), 2600); }
 function getEmoji(typeName) { for (const [k, v] of Object.entries(TYPE_EMOJI)) if (typeName?.includes(k)) return v; return TYPE_EMOJI["其他"]; }
 function getColor(typeName) { for (const [k, v] of Object.entries(TYPE_COLORS)) if (typeName?.includes(k)) return v; return TYPE_COLORS["其他"]; }
+function isMobileViewport() { return window.matchMedia("(max-width: 680px)").matches; }
+function setMobileView(view) {
+  currentMobileView = view || "plan";
+  app.classList.remove("mobile-plan", "mobile-map", "mobile-result");
+  app.classList.add(`mobile-${currentMobileView}`);
+  document.querySelectorAll("[data-mobile-view]").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.mobileView === currentMobileView);
+  });
+  if (currentMobileView === "map" && map) {
+    setTimeout(() => {
+      map.invalidateSize();
+      if (currentBounds) map.fitBounds(currentBounds, { padding: [32, 32], maxZoom: 16 });
+    }, 80);
+  }
+}
 
 function updateModeNote() { if (modeNote) modeNote.textContent = label(MODE_NOTES, currentMode, ""); }
 function applyMode(mode) {
@@ -505,7 +523,32 @@ function routeShareText(v = currentVariants[activeVariantIndex]) {
   return lines.join("\n");
 }
 function poiListText(v = currentVariants[activeVariantIndex]) { if (!v) return ""; const items = (v.route||[]).length ? v.route : (v.recommendations||[]); return items.map((it, i) => `${i+1}. ${it.name}`).join("\n"); }
-function handleStepAction(action, id) { const p = findPoi(id); if (!p) return; if (action === "copy-stop") { copyText(p.name, t("copiedName")); return; } if (action === "focus-stop") { const loc = p.location; if (map && loc) { map.setView([loc.lat, loc.lng], 17); showToast(t("locateStop")); } return; } if (action === "replace-stop") { showToast(t("replaceTodo")); return; } if (action === "skip-stop") { showToast(t("skipTodo")); } }
+function handleStepAction(action, id) {
+  const p = findPoi(id);
+  if (!p) return;
+  if (action === "copy-stop") {
+    copyText(p.name, t("copiedName"));
+    return;
+  }
+  if (action === "focus-stop") {
+    const loc = p.location;
+    if (map && loc) {
+      if (isMobileViewport()) setMobileView("map");
+      setTimeout(() => {
+        map.setView([loc.lat, loc.lng], 17);
+        showToast(t("locateStop"));
+      }, 90);
+    }
+    return;
+  }
+  if (action === "replace-stop") {
+    showToast(t("replaceTodo"));
+    return;
+  }
+  if (action === "skip-stop") {
+    showToast(t("skipTodo"));
+  }
+}
 
 // ---------- Planner ----------
 function parseDialogue(text) { const lines = text.split(/\n+/).map(l=>l.trim()).filter(Boolean); const msgs=[]; lines.forEach(line=>{const m=line.match(/^([^:：]{1,16})[:：]\s*(.+)$/);if(m)msgs.push({speaker_id:m[1].trim(),text:m[2].trim()});});return msgs.length>=2?msgs:null;}
@@ -529,15 +572,30 @@ async function runPlanner() {
   try {
     const resp = await fetch("/api/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     const data = await resp.json();
-    if (!resp.ok || !data.ok) throw new Error(data.error || "Request failed");
+    if (!resp.ok || !data.ok) {
+      const error = new Error(data.error || "Request failed");
+      error.code = data.error_code;
+      error.service_area = data.service_area;
+      throw error;
+    }
     activeVariantIndex = 0; renderResult(data); setStatus(t("done")); stopProgress(true);
+    if (isMobileViewport()) setMobileView("result");
     if (btnText) btnText.textContent = t("planButton");
-  } catch (err) { setStatus(`Error: ${err.message}`); if (btnText) btnText.textContent = t("planButton"); variantPanels.innerHTML = `<div class="empty-card">${escapeHtml(err.message)}</div>`; emptyFixes.hidden = false; stopProgress(false); console.error(err); }
+  } catch (err) { setStatus(`Error: ${err.message}`); if (btnText) btnText.textContent = t("planButton"); showRequestError(err); stopProgress(false); console.error(err); }
   finally { runButton.disabled = false; }
 }
 
+function showRequestError(err) {
+  const serviceHelp = (err?.code || err?.error_code) === "UNSUPPORTED_SERVICE_AREA"
+    ? `<div class="quick-error-actions"><button data-goal="春熙路附近想吃火锅">春熙路火锅</button><button data-goal="太古里附近逛街喝咖啡">太古里咖啡</button><button data-goal="九眼桥晚上喝酒，顺便找点夜宵">九眼桥夜游</button></div>`
+    : "";
+  variantPanels.innerHTML = `<div class="empty-card"><p>${escapeHtml(err.message || t("noResult"))}</p>${serviceHelp}</div>`;
+  emptyFixes.hidden = false;
+  if (isMobileViewport()) setMobileView("result");
+}
+
 // ---------- Location ----------
-function useMyLocation() { if (!navigator.geolocation) { return; } locateButton.disabled = true; navigator.geolocation.getCurrentPosition(pos=>{currentLocation={lat:Number(pos.coords.latitude.toFixed(6)),lng:Number(pos.coords.longitude.toFixed(6))};locateButton.disabled=false;mapCaption.textContent=`${t("currentLocation")} ${Number(radiusSelect.value)/1000}km`;},err=>{locateButton.disabled=false;},{enableHighAccuracy:true,timeout:10000}); }
+function useMyLocation() { if (!navigator.geolocation) { showToast(t("noGeo")); return; } locateButton.disabled = true; setStatus(t("locating")); navigator.geolocation.getCurrentPosition(pos=>{currentLocation={lat:Number(pos.coords.latitude.toFixed(6)),lng:Number(pos.coords.longitude.toFixed(6))};locateButton.disabled=false;mapCaption.textContent=`${t("currentLocation")} ${Number(radiusSelect.value)/1000}km`;setStatus(t("idle"));showToast(t("currentLocation"));},err=>{locateButton.disabled=false;setStatus(t("locationFailed"));showToast(t("locationFailed"));},{enableHighAccuracy:true,timeout:10000}); }
 function applyFix(kind) { if (kind === "radius") { radiusSelect.value = "5000"; mapCaption.textContent = `${getCenterLabel()} 5km`; showToast(t("fixRadius")); } if (kind === "mode") { const modes = ["tourist","business","resident"]; applyMode(modes[(modes.indexOf(currentMode)+1)%modes.length]); showToast(t("fixMode")); } if (kind === "time") { goalInput.value = `${goalInput.value.trim()}，时间可以放宽`; showToast(t("fixTime")); } }
 
 // ---------- Event Bindings ----------
@@ -546,7 +604,7 @@ radiusSelect?.addEventListener("change", () => { mapCaption.textContent = `${get
 document.querySelectorAll("[data-lang]").forEach(b => b.addEventListener("click", () => applyLanguage(b.dataset.lang)));
 document.querySelectorAll("[data-skin]").forEach(b => b.addEventListener("click", () => applySkin(b.dataset.skin)));
 document.querySelectorAll("[data-mode]").forEach(b => b.addEventListener("click", () => applyMode(b.dataset.mode)));
-document.querySelectorAll("#promptChips button").forEach(b => b.addEventListener("click", () => { goalInput.value = b.dataset.goal; document.querySelectorAll("#promptChips button").forEach(x=>x.classList.remove("suggested")); b.classList.add("suggested"); }));
+document.querySelectorAll("#promptChips button").forEach(b => b.addEventListener("click", () => { goalInput.value = b.dataset.goal; document.querySelectorAll("#promptChips button").forEach(x=>x.classList.remove("suggested")); b.classList.add("suggested"); if (isMobileViewport()) setMobileView("plan"); goalInput.focus(); }));
 clearGoalButton?.addEventListener("click", () => { goalInput.value = ""; goalInput.focus(); });
 runButton?.addEventListener("click", runPlanner);
 locateButton?.addEventListener("click", useMyLocation);
@@ -559,10 +617,21 @@ document.getElementById("zoomOutButton")?.addEventListener("click", () => map?.z
 document.getElementById("recenterButton")?.addEventListener("click", () => { if (map && currentBounds) map.fitBounds(currentBounds, { padding: [42,42], maxZoom: 16 }); });
 document.getElementById("startFocusButton")?.addEventListener("click", () => { const v = currentVariants[activeVariantIndex]; const s = v?.start_location || CENTER_MAP.chunxi; if (map && s) map.setView([s.lat, s.lng], 16); });
 emptyFixes?.addEventListener("click", e => { const b = e.target.closest("[data-fix]"); if (b) applyFix(b.dataset.fix); });
+variantPanels?.addEventListener("click", e => {
+  const b = e.target.closest("[data-goal]");
+  if (!b) return;
+  goalInput.value = b.dataset.goal;
+  setMobileView("plan");
+  goalInput.focus();
+});
 document.getElementById("clearSessionButton")?.addEventListener("click", async () => { try { await fetch("/api/session/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionInput.value.trim() || "default-session" }) }); setStatus(t("clearedSession")); showToast(t("clearedSession")); } catch(e) {} });
 document.getElementById("clearProfileButton")?.addEventListener("click", async () => { const uid = userInput.value.trim(); if (!uid) { setStatus(t("needUser")); return; } try { const r = await fetch("/api/profile/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: uid }) }); const d = await r.json(); if (!r.ok || !d.ok) throw new Error(d.error || "Clear failed"); const m = d.cleared ? t("clearedProfile") : t("noProfile"); setStatus(m); showToast(m); } catch(e) { setStatus(`Error: ${e.message}`); } });
 serviceAcceptButton?.addEventListener("click", closeServiceNotice);
 serviceModal?.addEventListener("click", e => { if (e.target === serviceModal) closeServiceNotice(); });
+document.querySelectorAll("[data-mobile-view]").forEach(btn => btn.addEventListener("click", () => setMobileView(btn.dataset.mobileView)));
+window.addEventListener("resize", () => {
+  if (!isMobileViewport() && map) setTimeout(() => map.invalidateSize(), 80);
+});
 
 // ---------- Init ----------
 applyLanguage(currentLang);
@@ -572,6 +641,7 @@ if (mapCaption) mapCaption.textContent = `${getCenterLabel()} 3km`;
 [copyRouteButton, copyPoiButton, exportButton].forEach(b => { if (b) b.disabled = true; });
 setStatus(t("idle"));
 showServiceNoticeIfNeeded();
+setMobileView(currentMobileView);
 
 // Animate prompt chips on load
 setTimeout(() => {

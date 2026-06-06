@@ -20,7 +20,7 @@
       </div>
     </div>
   </div>
-  <main class="workspace" id="app">
+  <main class="workspace mobile-plan" id="app">
     <!-- Left -->
     <aside class="panel left">
       <div class="brand-row">
@@ -194,6 +194,18 @@
         <span data-i18n="perfTotal">总计</span> <strong id="totalMs">-</strong>ms
       </div>
     </aside>
+
+    <nav class="mobile-nav" aria-label="移动端主导航">
+    <button class="active" data-mobile-view="plan" type="button">
+      <span data-i18n="mobilePlan">规划</span>
+    </button>
+    <button data-mobile-view="map" type="button">
+      <span data-i18n="mobileMap">地图</span>
+    </button>
+    <button data-mobile-view="result" type="button">
+      <span data-i18n="mobileResult">结果</span>
+    </button>
+  </nav>
   </main>
 
   <script src="https://cdn.bootcdn.net/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
