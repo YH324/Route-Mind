@@ -4,10 +4,10 @@
 
 ---
 
-## 1. 安全检查（本地执行）
+## 1. 安全检查
 
 ```powershell
-cd C:\Users\ls\Desktop\hackthon\demo
+cd /path/to/routemind
 
 # 确认 .env 未被 git 跟踪
 git ls-files | findstr "\.env"
@@ -20,10 +20,10 @@ git log --all -p -S "sk-" -- "*.py" "*.md" "*.txt"
 
 ---
 
-## 2. 打包（Windows 本地）
+## 2. 打包
 
 ```powershell
-cd C:\Users\ls\Desktop\hackthon\demo\deploy
+cd /path/to/routemind/deploy
 .\local_deploy.ps1
 ```
 
@@ -35,7 +35,7 @@ cd C:\Users\ls\Desktop\hackthon\demo\deploy
 也可以使用 Python 打包脚本：
 
 ```powershell
-cd C:\Users\ls\Desktop\hackthon\demo
+cd /path/to/routemind
 python deploy\local_deploy.py
 ```
 
@@ -118,7 +118,7 @@ systemctl status routemind
 # 本地健康检查
 curl http://47.102.142.207:8000/api/health
 
-# 测试规划接口
+# 验证规划接口
 curl -X POST http://47.102.142.207:8000/api/v2/plan \
   -H "Content-Type: application/json" \
   -d '{"goal":"春熙路附近，下午四点想吃火锅","city":"成都","mode":"tourist"}'
@@ -145,4 +145,4 @@ curl -X POST http://47.102.142.207:8000/api/v2/plan \
 - [ ] git 历史中没有硬编码的 API Key
 - [ ] 服务器防火墙仅开放必要端口
 - [ ] 生产环境建议使用 Nginx 反向代理 + HTTPS
-- [ ] 考虑限制 `HOST=127.0.0.1` + Nginx 转发，避免直接暴露 8000
+- [ ] 建议使用 `HOST=127.0.0.1` 配合 Nginx / Caddy 转发，避免直接暴露应用端口
