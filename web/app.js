@@ -196,6 +196,38 @@ function label(m, k, fb="") { const v = m?.[k]; if (typeof v === "string") retur
 function variantName(v) { return label(VARIANT_LABELS, v.variant_id, v.name || `方案${activeVariantIndex+1}`); }
 function getCenterLabel(v = centerSelect.value) { const c = CENTER_MAP[v]; return c?.name?.[currentLang] || c?.name?.zh || v; }
 function getModeLabel(v = currentMode) { return label(MODE_LABELS, v, v); }
+function promptOptions() {
+  const area = getCenterLabel(centerSelect?.value || "chunxi");
+  return currentLang === "en"
+    ? [
+        { label: "Food", goal: `${area}附近找一家适合现在去的餐厅` },
+        { label: "Sights", goal: `${area}附近看景点或公园，安排两小时` },
+        { label: "Coffee", goal: `${area}附近喝咖啡或找茶馆，顺便散步` },
+        { label: "Night", goal: `${area}附近晚上喝酒或吃夜宵` },
+        { label: "Business", goal: `${area}附近出差，1小时内找午餐和咖啡` },
+      ]
+    : [
+        { label: "餐饮", goal: `${area}附近找一家适合现在去的餐厅` },
+        { label: "景点公园", goal: `${area}附近看景点或公园，安排两小时` },
+        { label: "咖啡茶馆", goal: `${area}附近喝咖啡或找茶馆，顺便散步` },
+        { label: "夜间活动", goal: `${area}附近晚上喝酒或吃夜宵` },
+        { label: "出差短程", goal: `${area}附近出差，1小时内找午餐和咖啡` },
+      ];
+}
+function applyPromptGoal(button) {
+  goalInput.value = button.dataset.goal || "";
+  document.querySelectorAll("#promptChips button").forEach(x => x.classList.remove("suggested"));
+  button.classList.add("suggested");
+  if (isMobileViewport()) setMobileView("plan");
+  goalInput.focus();
+}
+function renderPromptChips() {
+  const row = document.getElementById("promptChips");
+  if (!row) return;
+  row.innerHTML = promptOptions().map(option => (
+    `<button type="button" data-goal="${escapeHtml(option.goal)}">${escapeHtml(option.label)}</button>`
+  )).join("");
+}
 function setStatus(text) {
   statusText.textContent = text;
   const dot = document.getElementById("statusDot");
@@ -250,7 +282,7 @@ function updateTexts() {
   updateModeNote();
   if (currentResult) renderResult({ result: currentResult, performance: currentResult._perf || {}, interaction: currentResult._interaction || {}, notice: currentResult._notice });
 }
-function applyLanguage(lang) { currentLang = lang; localStorage.setItem("routemind_lang", lang); updateTexts(); }
+function applyLanguage(lang) { currentLang = lang; localStorage.setItem("routemind_lang", lang); updateTexts(); renderPromptChips(); }
 
 function showServiceNoticeIfNeeded() {
   if (!serviceModal) return;
@@ -663,12 +695,15 @@ function useMyLocation() { if (!navigator.geolocation) { showToast(t("noGeo")); 
 function applyFix(kind) { if (kind === "radius") { radiusSelect.value = "5000"; mapCaption.textContent = `${getCenterLabel()} 5km`; showToast(t("fixRadius")); } if (kind === "mode") { const modes = ["tourist","business","resident"]; applyMode(modes[(modes.indexOf(currentMode)+1)%modes.length]); showToast(t("fixMode")); } if (kind === "time") { goalInput.value = `${goalInput.value.trim()}，时间可以放宽`; showToast(t("fixTime")); } }
 
 // ---------- Event Bindings ----------
-centerSelect?.addEventListener("change", () => { currentLocation = null; mapCaption.textContent = `${getCenterLabel()} ${Number(radiusSelect.value)/1000}km`; });
+centerSelect?.addEventListener("change", () => { currentLocation = null; mapCaption.textContent = `${getCenterLabel()} ${Number(radiusSelect.value)/1000}km`; renderPromptChips(); });
 radiusSelect?.addEventListener("change", () => { mapCaption.textContent = `${getCenterLabel()} ${Number(radiusSelect.value)/1000}km`; });
 document.querySelectorAll("[data-lang]").forEach(b => b.addEventListener("click", () => applyLanguage(b.dataset.lang)));
 document.querySelectorAll("[data-skin]").forEach(b => b.addEventListener("click", () => applySkin(b.dataset.skin)));
 document.querySelectorAll("[data-mode]").forEach(b => b.addEventListener("click", () => applyMode(b.dataset.mode)));
-document.querySelectorAll("#promptChips button").forEach(b => b.addEventListener("click", () => { goalInput.value = b.dataset.goal; document.querySelectorAll("#promptChips button").forEach(x=>x.classList.remove("suggested")); b.classList.add("suggested"); if (isMobileViewport()) setMobileView("plan"); goalInput.focus(); }));
+document.getElementById("promptChips")?.addEventListener("click", e => {
+  const button = e.target.closest("button[data-goal]");
+  if (button) applyPromptGoal(button);
+});
 clearGoalButton?.addEventListener("click", () => { goalInput.value = ""; goalInput.focus(); });
 runButton?.addEventListener("click", runPlanner);
 locateButton?.addEventListener("click", useMyLocation);
