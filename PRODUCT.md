@@ -5,7 +5,7 @@
 基于语义理解 + 路网距离 + 营业时间的智能 POI 路线规划引擎。用户用自然语言描述需求（如"想吃火锅"、"成都半日游"），系统自动生成贴合街道的真实路线。
 
 ### 核心差异化
-- **意图理解**：短查询先走本地规则快路径，复杂模糊表达再调用 MiMo/MiniMax/GLM，避免"想吃火锅"被过度规划成路线
+- **意图理解**：配置 API Key 后优先调用 MiMo/MiniMax/GLM 判断意图，再用确定性门控纠正明显误判；无 Key 或外部服务不可用时走本地语义兜底，避免"想吃火锅"被过度规划成路线
 - **语义检索增强**：复杂路线在配置 `GLM_API_KEY` 后可用本地 POI 向量 + GLM 查询向量做候选增强，未配置或网络异常时自动跳过
 - **下一代交互理解**：支持 `session_id/user_id` 记忆、多说话人对话聚合、清淡/约会/亲子/商务等语义需求匹配
 - **路网真实路径**：Dijkstra 最短路径，路线折线贴合街道（非直线）
@@ -212,10 +212,11 @@ web_app.py (ThreadingHTTPServer)
 
 ### 环境变量示例（.env）
 ```bash
-# LLM API Key（任选其一；无 key 时使用规则 fallback）
+# LLM API Key（任选其一；无 key 时使用本地语义兜底）
 MIMO_API_KEY=
 MINIMAX_API_KEY=
 GLM_API_KEY=
+INTENT_LLM_FAILURE_COOLDOWN_SECONDS=120
 
 # 服务监听
 HOST=127.0.0.1
@@ -247,6 +248,7 @@ PERSIST_KNN_CACHE=0
 | `ENABLE_LLM_CANDIDATE_REVIEW` | 1 | 是否允许大模型在已筛出的 POI 候选中评审重排 |
 | `LLM_REVIEW_CANDIDATE_TOP_N` | 12 | 送入候选评审的大模型候选数 |
 | `LLM_REVIEW_BONUS` | 1.2 | 大模型候选评审最大加分 |
+| `INTENT_LLM_FAILURE_COOLDOWN_SECONDS` | 120 | 意图 LLM 调用失败后的短时熔断秒数 |
 | `AUTO_TIME_PERCENTILE` | 60 | 自动调整起始时间的百分位 |
 | `AUTO_TIME_THRESHOLD` | 0.05 | 营业率低于此值时触发时间调整 |
 | `PERSIST_KNN_CACHE` | 0 | 是否把新计算的KNN距离写回本地缓存 |
@@ -261,7 +263,7 @@ PERSIST_KNN_CACHE=0
 | 语义需求 | `NeedInferer` | 将“清淡”“适合约会”“带孩子”“商务宴请”“拍照好看”映射为结构化需求标签 |
 | POI匹配 | `PoiMatcher` | 根据POI类型、名称和评分聚合信号推断属性，并把语义匹配分融入排序 |
 
-当多人对话推断出明确顺序时，交互层会通过 `interaction.intent_hint` 覆盖基础意图分类，例如短文本先被规则识别为 `single_poi`，但 `sequence=["中餐","商场"]` 会提升为 `simple_route`。
+当多人对话推断出明确顺序时，交互层会通过 `interaction.intent_hint` 覆盖基础意图分类，例如短文本先被本地语义兜底识别为 `single_poi`，但 `sequence=["中餐","商场"]` 会提升为 `simple_route`。
 
 交互智能回归测试：
 ```bash
@@ -270,7 +272,7 @@ python _test_interaction.py
 
 ## 6. 意图分类与推荐策略
 
-系统先用本地规则识别高置信短查询；规则不确定时按 MiMo → MiniMax → GLM 的顺序调用 LLM，失败后回落到规则分类：
+系统在配置 API Key 后按 MiMo → MiniMax → GLM 的顺序调用 LLM 判断意图，再用确定性门控修正明显误判；无 Key 或外部服务不可用时回落到本地语义兜底，失败 provider 会短时熔断以避免反复等待不可用接口：
 
 | 意图类型 | 触发条件 | 变体数 | POI 数 | 示例 |
 |---------|---------|--------|--------|------|
@@ -327,7 +329,7 @@ curl http://127.0.0.1:8000/api/ready
 - **根治方案**：需重新处理 2GB 原始评论数据（`ugc_groundtruth_v4_xl.json`）生成更准确的类型映射
 
 ### LLM 依赖
-- 意图分类优先使用 MiMo/MiniMax/GLM，网络异常时会降级到本地规则；语义搜索需要 `GLM_API_KEY`，未配置或网络异常时会跳过增强；候选评审可使用同一组 LLM Provider，但只重排真实候选
+- 意图分类优先使用 MiMo/MiniMax/GLM，网络异常时会降级到本地语义兜底并短时熔断失败 provider；语义搜索需要 `GLM_API_KEY`，未配置或网络异常时会跳过增强；候选评审可使用同一组 LLM Provider，但只重排真实候选
 - 建议在生产环境配置 API Key 并监控调用成功率
 
 ### 性能

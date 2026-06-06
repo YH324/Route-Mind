@@ -441,6 +441,16 @@ function renderClarificationActions(options = []) {
   return `<div class="quick-error-actions">${options.map(o => `<button data-goal="${escapeHtml(o.goal || o.label || "")}">${escapeHtml(o.label || t("askFollowup"))}</button>`).join("")}</div>`;
 }
 
+function serviceFallbackOptions() {
+  const area = getCenterLabel(centerSelect?.value || "chunxi");
+  return [
+    { label: `${area}餐饮`, goal: `${area}附近找一家适合现在去的餐厅` },
+    { label: `${area}景点`, goal: `${area}附近看景点或公园，安排两小时` },
+    { label: `${area}咖啡`, goal: `${area}附近喝咖啡或找茶馆，顺便散步` },
+    { label: `${area}夜间`, goal: `${area}附近晚上喝酒或吃夜宵` },
+  ];
+}
+
 function renderRouteStep(step, i, variant) {
   const move = step.move_from_prev;
   const moveHtml = move ? `<div class="move">&rarr; ${formatDistance(move.distance_m)} / ${formatTime(move.time_min)}</div>` : "";
@@ -641,7 +651,7 @@ async function runPlanner() {
 
 function showRequestError(err) {
   const serviceHelp = (err?.code || err?.error_code) === "UNSUPPORTED_SERVICE_AREA"
-    ? `<div class="quick-error-actions"><button data-goal="春熙路附近想吃火锅">春熙路火锅</button><button data-goal="太古里附近逛街喝咖啡">太古里咖啡</button><button data-goal="九眼桥晚上喝酒，顺便找点夜宵">九眼桥夜游</button></div>`
+    ? renderClarificationActions(serviceFallbackOptions())
     : "";
   variantPanels.innerHTML = `<div class="empty-card"><p>${escapeHtml(err.message || t("noResult"))}</p>${serviceHelp}</div>`;
   emptyFixes.hidden = false;

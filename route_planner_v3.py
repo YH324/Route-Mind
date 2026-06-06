@@ -13,6 +13,7 @@ import json
 import os
 import re
 import random
+import time
 import urllib.request
 import math
 from datetime import datetime, timedelta
@@ -28,6 +29,7 @@ DEFAULT_CENTER_LAT = 30.65705
 RANKING_MODEL_VERSION = "feature_ranker_v1.5"
 PLANNER_VERSION = "route_planner_v3.9"
 _REFERENCE_POIS_CACHE = None
+_INTENT_LLM_UNAVAILABLE_UNTIL = {}
 
 
 def _module_path(path):
@@ -53,6 +55,7 @@ from config import (
     MIMO_API_KEY, MIMO_CHAT_URL, MIMO_MODEL, MIMO_AUTH_TYPE,
     MINIMAX_API_KEY, MINIMAX_CHAT_URL, MINIMAX_MODEL, MINIMAX_AUTH_TYPE,
     GLM_API_KEY, GLM_CHAT_URL, GLM_MODEL, GLM_AUTH_TYPE,
+    INTENT_LLM_FAILURE_COOLDOWN_SECONDS,
     CATEGORY_QUOTA, CATEGORY_LIMITS, CONCRETE_TYPE_LIMIT,
     SEMANTIC_TOP_K, SEMANTIC_BOOST,
     AUTO_TIME_PERCENTILE, AUTO_TIME_THRESHOLD,
@@ -109,8 +112,8 @@ def _looks_like_nearby_single_goal(text):
     return any(term in lower for term in ("景点", "公园", "去哪玩", "玩", "看景点", "散步"))
 
 
-def _rule_guard_intent(goal_text, intent):
-    """用高置信规则约束 LLM 误判，避免短单点需求被扩成完整路线。"""
+def _deterministic_intent_guard(goal_text, intent):
+    """用高置信语义信号约束 LLM 误判，避免短单点需求被扩成完整路线。"""
     text = goal_text.lower()
     if _looks_like_nearby_single_goal(text):
         return "single_poi"
@@ -125,37 +128,67 @@ def _rule_guard_intent(goal_text, intent):
     return intent
 
 
-def _high_confidence_rule_intent(goal_text):
-    """明确关键词直接走规则，避免为简单请求等待外部模型。"""
+def _local_intent_result(intent_type, reason, provider="deterministic_gate"):
+    return {"intent_type": intent_type, "reason": reason, "provider": provider}
+
+
+def _high_confidence_intent_gate(goal_text):
+    """明确短意图先走本地门控，减少外部模型延迟。"""
     text = goal_text.lower()
     if _looks_like_nearby_single_goal(text):
-        return {"intent_type": "single_poi", "reason": "规则快速路径：附近单点/短列表需求"}
+        return _local_intent_result("single_poi", "本地意图门控：附近单点/短列表需求")
     if _contains_any(text, STRONG_COMPLEX_ROUTE_SIGNALS):
-        return {"intent_type": "complex_route", "reason": "规则快速路径：完整路线信号"}
+        return _local_intent_result("complex_route", "本地意图门控：完整路线信号")
     if _contains_any(text, SEQUENCE_SIGNALS) or _has_multi_concrete_goal(text):
-        return {"intent_type": "simple_route", "reason": "规则快速路径：顺序/连接信号"}
+        return _local_intent_result("simple_route", "本地意图门控：顺序/连接信号")
     if _contains_any(text, COMPLEX_ROUTE_SIGNALS):
-        return {"intent_type": "complex_route", "reason": "规则快速路径：完整路线信号"}
+        return _local_intent_result("complex_route", "本地意图门控：完整路线信号")
     if _contains_any(text, SINGLE_POI_SIGNALS):
-        return {"intent_type": "single_poi", "reason": "规则快速路径：单点需求信号"}
+        return _local_intent_result("single_poi", "本地意图门控：单点需求信号")
     return None
 
 
-def _classify_intent_by_rule(goal_text):
-    """基于规则的意图分类（LLM 不可用时作为 fallback）"""
+def _has_intent_llm_provider():
+    return bool(MIMO_API_KEY or MINIMAX_API_KEY or GLM_API_KEY)
+
+
+def _intent_provider_available(provider):
+    return time.monotonic() >= _INTENT_LLM_UNAVAILABLE_UNTIL.get(provider, 0)
+
+
+def _mark_intent_provider_failure(provider):
+    if INTENT_LLM_FAILURE_COOLDOWN_SECONDS > 0:
+        _INTENT_LLM_UNAVAILABLE_UNTIL[provider] = time.monotonic() + INTENT_LLM_FAILURE_COOLDOWN_SECONDS
+
+
+def _intent_classification_payload(intent_type, reason, llm_used, provider, raw_intent_type=None):
+    payload = {
+        "intent_type": intent_type,
+        "reason": reason,
+        "llm_used": bool(llm_used),
+        "provider": provider,
+    }
+    if raw_intent_type and raw_intent_type != intent_type:
+        payload["raw_intent_type"] = raw_intent_type
+        payload["guardrail"] = "deterministic_intent_guard"
+    return payload
+
+
+def _classify_intent_locally(goal_text):
+    """LLM 不可用时的本地语义兜底，避免服务不可用。"""
     text = goal_text.lower()
     if _looks_like_nearby_single_goal(text):
-        return {"intent_type": "single_poi", "reason": "规则匹配：附近单点/短列表需求"}
+        return _local_intent_result("single_poi", "本地语义兜底：附近单点/短列表需求", "local_semantic_guardrail")
     
     # complex_route 的强信号
     for s in STRONG_COMPLEX_ROUTE_SIGNALS:
         if s in text:
-            return {"intent_type": "complex_route", "reason": f"规则匹配：包含'{s}'"}
+            return _local_intent_result("complex_route", f"本地语义兜底：包含'{s}'", "local_semantic_guardrail")
 
     # 短查询通常是在找一个地点类型，不应在 LLM 不可用时硬扩成半日路线。
     if _contains_any(text, SINGLE_POI_SIGNALS) and not _contains_any(text, SEQUENCE_SIGNALS):
         if not _has_multi_concrete_goal(text):
-            return {"intent_type": "single_poi", "reason": "规则匹配：短查询/单点需求"}
+            return _local_intent_result("single_poi", "本地语义兜底：短查询/单点需求", "local_semantic_guardrail")
     
     # simple_route 的强信号：连接词/顺序词 + 地点
     has_sequence = _contains_any(text, SEQUENCE_SIGNALS) or _has_multi_concrete_goal(text)
@@ -168,17 +201,17 @@ def _classify_intent_by_rule(goal_text):
                 type_count += 1
     
     if has_sequence or type_count >= 2:
-        return {"intent_type": "simple_route", "reason": "规则匹配：包含顺序词或多个地点"}
+        return _local_intent_result("simple_route", "本地语义兜底：包含顺序词或多个地点", "local_semantic_guardrail")
     for s in COMPLEX_ROUTE_SIGNALS:
         if s in text:
-            return {"intent_type": "complex_route", "reason": f"规则匹配：包含'{s}'"}
+            return _local_intent_result("complex_route", f"本地语义兜底：包含'{s}'", "local_semantic_guardrail")
     
     # single_poi：只有一个类型词，且没有复杂路线信号
     if type_count == 1 and len(text) <= 15:
-        return {"intent_type": "single_poi", "reason": "规则匹配：简短单点需求"}
+        return _local_intent_result("single_poi", "本地语义兜底：简短单点需求", "local_semantic_guardrail")
     
     # 默认
-    return {"intent_type": "complex_route", "reason": "规则匹配：默认复杂路线"}
+    return _local_intent_result("complex_route", "本地语义兜底：信息不足时进入完整规划", "local_semantic_guardrail")
 
 
 def _auth_headers(api_key, auth_type):
@@ -239,16 +272,16 @@ def _call_llm_api(url, api_key, model, system_prompt, user_prompt, timeout=15,
 def classify_intent_with_llm(goal_text):
     """
     调用大模型判断用户意图类型。
-    优先级：MiMo > MiniMax Coding Plan > GLM > 规则 fallback
+    优先级：MiMo > MiniMax Coding Plan > GLM > 本地语义兜底
     
     Returns:
         dict: {"intent_type": "single_poi|simple_route|complex_route", "reason": str, "llm_used": bool}
     """
-    fast_rule = _high_confidence_rule_intent(goal_text)
-    if fast_rule:
-        fast_rule["llm_used"] = False
-        print(f"[LLM-Intent] Rule fast path: {fast_rule['intent_type']}")
-        return fast_rule
+    fast_gate = _high_confidence_intent_gate(goal_text)
+    if fast_gate and not _has_intent_llm_provider():
+        fast_gate["llm_used"] = False
+        print(f"[Intent] Deterministic gate: {fast_gate['intent_type']}")
+        return fast_gate
 
     system_prompt = (
         "你是一个旅游意图分类助手。根据用户的自然语言输入，判断用户的真实意图类型。\n"
@@ -256,7 +289,7 @@ def classify_intent_with_llm(goal_text):
         "1. single_poi：用户只想去一个地方，或只想找某个类型的单个地点（如'想吃火锅'、'找个咖啡馆'、'附近有好吃的烧烤吗'）\n"
         "2. simple_route：用户想去 2-3 个地方简单逛逛，有明确的少量地点组合（如'吃完火锅去茶馆'、'想逛街顺便吃个饭'）\n"
         "3. complex_route：用户要求规划完整路线，想串联多个地点，或提到'半日游'、'一日游'、'攻略'等词汇（如'成都半日游'、'想逛多个景点'）\n\n"
-        "重要规则：\n"
+        "输出要求：\n"
         "- 必须只输出纯 JSON，不要任何解释、前言、emoji、markdown代码块\n"
         "- 输出格式示例：{\"intent_type\": \"single_poi\", \"reason\": \"用户只想吃火锅\"}\n"
         "- 请直接输出 JSON 文本"
@@ -266,84 +299,96 @@ def classify_intent_with_llm(goal_text):
 
     # 1. 优先尝试 MiMo
     if MIMO_API_KEY:
-        try:
-            result = _call_llm_api(
-                MIMO_CHAT_URL, MIMO_API_KEY, MIMO_MODEL,
-                system_prompt, goal_text,
-                auth_type=MIMO_AUTH_TYPE,
-                token_field="max_completion_tokens",
-                include_thinking=True,
-            )
-            intent = result.get("intent_type", "complex_route")
-            if intent not in ("single_poi", "simple_route", "complex_route"):
-                intent = "complex_route"
-            guarded_intent = _rule_guard_intent(goal_text, intent)
-            if guarded_intent != intent:
-                print(f"[LLM-Intent] MiMo -> {intent}, guard -> {guarded_intent}: {result.get('reason', '')}")
-            else:
-                print(f"[LLM-Intent] MiMo -> {intent}: {result.get('reason', '')}")
-            return {"intent_type": guarded_intent, "reason": result.get("reason", ""), "llm_used": True, "provider": "mimo"}
-        except Exception as e:
-            print(f"[LLM-Intent] MiMo failed: {e}")
-            llm_errors["MiMo"] = str(e)
+        if not _intent_provider_available("mimo"):
+            llm_errors["MiMo"] = "temporarily skipped after recent failure"
+        else:
+            try:
+                result = _call_llm_api(
+                    MIMO_CHAT_URL, MIMO_API_KEY, MIMO_MODEL,
+                    system_prompt, goal_text,
+                    auth_type=MIMO_AUTH_TYPE,
+                    token_field="max_completion_tokens",
+                    include_thinking=True,
+                )
+                intent = result.get("intent_type", "complex_route")
+                if intent not in ("single_poi", "simple_route", "complex_route"):
+                    intent = "complex_route"
+                guarded_intent = _deterministic_intent_guard(goal_text, intent)
+                if guarded_intent != intent:
+                    print(f"[LLM-Intent] MiMo -> {intent}, guard -> {guarded_intent}: {result.get('reason', '')}")
+                else:
+                    print(f"[LLM-Intent] MiMo -> {intent}: {result.get('reason', '')}")
+                return _intent_classification_payload(guarded_intent, result.get("reason", ""), True, "mimo", intent)
+            except Exception as e:
+                print(f"[LLM-Intent] MiMo failed: {e}")
+                llm_errors["MiMo"] = str(e)
+                _mark_intent_provider_failure("mimo")
     else:
         llm_errors["MiMo"] = "API key not configured"
 
     # 2. MiMo 失败时回退到 MiniMax Coding Plan
     if MINIMAX_API_KEY:
-        try:
-            result = _call_llm_api(
-                MINIMAX_CHAT_URL, MINIMAX_API_KEY, MINIMAX_MODEL,
-                system_prompt, goal_text,
-                auth_type=MINIMAX_AUTH_TYPE,
-                token_field="max_tokens",
-                include_thinking=False,
-            )
-            intent = result.get("intent_type", "complex_route")
-            if intent not in ("single_poi", "simple_route", "complex_route"):
-                intent = "complex_route"
-            guarded_intent = _rule_guard_intent(goal_text, intent)
-            if guarded_intent != intent:
-                print(f"[LLM-Intent] MiniMax -> {intent}, guard -> {guarded_intent}: {result.get('reason', '')}")
-            else:
-                print(f"[LLM-Intent] MiniMax -> {intent}: {result.get('reason', '')}")
-            return {"intent_type": guarded_intent, "reason": result.get("reason", ""), "llm_used": True, "provider": "minimax"}
-        except Exception as e:
-            print(f"[LLM-Intent] MiniMax failed: {e}")
-            llm_errors["MiniMax"] = str(e)
+        if not _intent_provider_available("minimax"):
+            llm_errors["MiniMax"] = "temporarily skipped after recent failure"
+        else:
+            try:
+                result = _call_llm_api(
+                    MINIMAX_CHAT_URL, MINIMAX_API_KEY, MINIMAX_MODEL,
+                    system_prompt, goal_text,
+                    auth_type=MINIMAX_AUTH_TYPE,
+                    token_field="max_tokens",
+                    include_thinking=False,
+                )
+                intent = result.get("intent_type", "complex_route")
+                if intent not in ("single_poi", "simple_route", "complex_route"):
+                    intent = "complex_route"
+                guarded_intent = _deterministic_intent_guard(goal_text, intent)
+                if guarded_intent != intent:
+                    print(f"[LLM-Intent] MiniMax -> {intent}, guard -> {guarded_intent}: {result.get('reason', '')}")
+                else:
+                    print(f"[LLM-Intent] MiniMax -> {intent}: {result.get('reason', '')}")
+                return _intent_classification_payload(guarded_intent, result.get("reason", ""), True, "minimax", intent)
+            except Exception as e:
+                print(f"[LLM-Intent] MiniMax failed: {e}")
+                llm_errors["MiniMax"] = str(e)
+                _mark_intent_provider_failure("minimax")
     else:
         llm_errors["MiniMax"] = "API key not configured"
 
     # 3. MiniMax 失败时回退到 GLM
     if GLM_API_KEY:
-        try:
-            result = _call_llm_api(
-                GLM_CHAT_URL, GLM_API_KEY, GLM_MODEL,
-                system_prompt, goal_text,
-                auth_type=GLM_AUTH_TYPE,
-                token_field="max_tokens",
-                include_thinking=False,
-            )
-            intent = result.get("intent_type", "complex_route")
-            if intent not in ("single_poi", "simple_route", "complex_route"):
-                intent = "complex_route"
-            guarded_intent = _rule_guard_intent(goal_text, intent)
-            if guarded_intent != intent:
-                print(f"[LLM-Intent] GLM -> {intent}, guard -> {guarded_intent}: {result.get('reason', '')}")
-            else:
-                print(f"[LLM-Intent] GLM -> {intent}: {result.get('reason', '')}")
-            return {"intent_type": guarded_intent, "reason": result.get("reason", ""), "llm_used": True, "provider": "glm"}
-        except Exception as e:
-            print(f"[LLM-Intent] GLM failed: {e}")
-            llm_errors["GLM"] = str(e)
+        if not _intent_provider_available("glm"):
+            llm_errors["GLM"] = "temporarily skipped after recent failure"
+        else:
+            try:
+                result = _call_llm_api(
+                    GLM_CHAT_URL, GLM_API_KEY, GLM_MODEL,
+                    system_prompt, goal_text,
+                    auth_type=GLM_AUTH_TYPE,
+                    token_field="max_tokens",
+                    include_thinking=False,
+                )
+                intent = result.get("intent_type", "complex_route")
+                if intent not in ("single_poi", "simple_route", "complex_route"):
+                    intent = "complex_route"
+                guarded_intent = _deterministic_intent_guard(goal_text, intent)
+                if guarded_intent != intent:
+                    print(f"[LLM-Intent] GLM -> {intent}, guard -> {guarded_intent}: {result.get('reason', '')}")
+                else:
+                    print(f"[LLM-Intent] GLM -> {intent}: {result.get('reason', '')}")
+                return _intent_classification_payload(guarded_intent, result.get("reason", ""), True, "glm", intent)
+            except Exception as e:
+                print(f"[LLM-Intent] GLM failed: {e}")
+                llm_errors["GLM"] = str(e)
+                _mark_intent_provider_failure("glm")
     else:
         llm_errors["GLM"] = "API key not configured"
     
-    # 4. 所有 LLM 都失败时降级为规则
-    result = _classify_intent_by_rule(goal_text)
+    # 4. 所有 LLM 都失败时降级到本地语义兜底
+    result = fast_gate or _classify_intent_locally(goal_text)
     result["llm_used"] = False
     result["llm_error"] = "; ".join(f"{name}: {error}" for name, error in llm_errors.items())
-    print(f"[LLM-Intent] Rule fallback: {result['intent_type']}")
+    print(f"[Intent] Local semantic guardrail: {result['intent_type']}")
     return result
 
 
@@ -1439,7 +1484,7 @@ def parse_goal(goal_text):
             m = time_match2.group(2)
             if h is not None:
                 minute = int(m) if m and m.isdigit() else 0
-                # 无AM/PM时，简单规则：<=6 视为晚上（18-23），>6 且 <12 视为上午
+                # 中文口语里 1-6 点常省略“晚上”，这里按晚间表达解析。
                 if h <= 6:
                     h += 12
                 start_time = "{:02d}:{:02d}".format(h, minute)
@@ -1811,10 +1856,12 @@ def _model_metadata(intent_result, constraints, trace, semantic_poi_ids=None):
         "strategy": "feature-weighted constraint planner",
         "intent": {
             "type": constraints.get("intent_type"),
-            "provider": constraints.get("intent_provider", "fallback"),
+            "provider": constraints.get("intent_provider", "local_semantic_guardrail"),
             "llm_used": bool(constraints.get("llm_used", False)),
             "reason": constraints.get("intent_reason"),
             "error": constraints.get("llm_error"),
+            "guardrail": constraints.get("intent_guardrail"),
+            "raw_type": constraints.get("raw_intent_type"),
         },
         "feature_sources": [
             "ground_truth_quality",
@@ -2595,7 +2642,11 @@ def build_plan_v3(goal, pois, gt_data, center_lng=DEFAULT_CENTER_LNG, center_lat
     constraints["intent_type"] = intent_type
     constraints["llm_used"] = intent_result.get("llm_used", False)
     constraints["intent_reason"] = intent_result.get("reason")
-    constraints["intent_provider"] = intent_result.get("provider", "llm" if intent_result.get("llm_used") else "fallback")
+    constraints["intent_provider"] = intent_result.get("provider") or ("llm" if intent_result.get("llm_used") else "local_semantic_guardrail")
+    if intent_result.get("guardrail"):
+        constraints["intent_guardrail"] = intent_result["guardrail"]
+    if intent_result.get("raw_intent_type"):
+        constraints["raw_intent_type"] = intent_result["raw_intent_type"]
     if "llm_error" in intent_result:
         constraints["llm_error"] = intent_result["llm_error"]
 

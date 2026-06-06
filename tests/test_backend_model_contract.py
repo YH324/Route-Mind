@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from unittest.mock import patch
 
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -8,6 +9,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app_service import CITY_CENTERS, run_agent
 from interaction_intelligence import LOCATION_ALIASES
 from route_planner_v3 import (
+    classify_intent_with_llm,
+    _INTENT_LLM_UNAVAILABLE_UNTIL,
     _correct_candidate_type,
     _estimated_review_signal,
     _score_poi_features,
@@ -52,7 +55,7 @@ class TestBackendModelContract(unittest.TestCase):
         response = run_agent(
             {
                 "goal": "随便安排一下",
-                "city": "chengdu",
+                "city": "taikooli",
                 "radius": 3000,
                 "user_mode": "tourist",
             },
@@ -61,7 +64,9 @@ class TestBackendModelContract(unittest.TestCase):
         self.assertTrue(response["ok"], response)
         self.assertFalse(response["result"]["variants"])
         self.assertEqual(response["result"]["constraints"].get("intent_type"), "clarification")
-        self.assertTrue(response.get("clarification_options"), response)
+        options = response.get("clarification_options")
+        self.assertTrue(options, response)
+        self.assertTrue(all("太古里" in option.get("goal", "") for option in options), options)
         self.assertIn("需要", response.get("notice", ""))
 
     def test_local_landmark_mentions_recenter_request(self):
@@ -111,6 +116,40 @@ class TestBackendModelContract(unittest.TestCase):
         self.assertIn("popularity_adjustment", basis["features"])
         self.assertIn("open_at_arrival", basis["features"])
         self.assertIn("estimated_review_volume", result["model"]["feature_sources"])
+        self.assertNotEqual(result["model"]["intent"].get("provider"), "fallback")
+
+    def test_configured_llm_is_tried_before_local_intent_gate(self):
+        with patch("route_planner_v3.MIMO_API_KEY", "test-key"), \
+             patch("route_planner_v3.MINIMAX_API_KEY", ""), \
+             patch("route_planner_v3.GLM_API_KEY", ""), \
+             patch.dict(_INTENT_LLM_UNAVAILABLE_UNTIL, {}, clear=True), \
+             patch("route_planner_v3._call_llm_api") as call_llm:
+            call_llm.return_value = {
+                "intent_type": "single_poi",
+                "reason": "用户只想找附近火锅",
+            }
+
+            result = classify_intent_with_llm("春熙路附近想吃火锅")
+
+        self.assertTrue(call_llm.called)
+        self.assertEqual(result["intent_type"], "single_poi")
+        self.assertTrue(result["llm_used"])
+        self.assertEqual(result["provider"], "mimo")
+
+    def test_failed_intent_llm_uses_cooldown_before_local_fallback(self):
+        with patch("route_planner_v3.MIMO_API_KEY", "test-key"), \
+             patch("route_planner_v3.MINIMAX_API_KEY", ""), \
+             patch("route_planner_v3.GLM_API_KEY", ""), \
+             patch("route_planner_v3.INTENT_LLM_FAILURE_COOLDOWN_SECONDS", 60), \
+             patch.dict(_INTENT_LLM_UNAVAILABLE_UNTIL, {}, clear=True), \
+             patch("route_planner_v3._call_llm_api", side_effect=OSError("down")) as call_llm:
+            first = classify_intent_with_llm("春熙路附近想吃火锅")
+            second = classify_intent_with_llm("春熙路附近想吃火锅")
+
+        self.assertEqual(call_llm.call_count, 1)
+        self.assertEqual(first["provider"], "deterministic_gate")
+        self.assertEqual(second["provider"], "deterministic_gate")
+        self.assertIn("temporarily skipped", second.get("llm_error", ""))
 
     def test_explicit_park_single_poi_does_not_expand_to_all_sights(self):
         response = run_agent(

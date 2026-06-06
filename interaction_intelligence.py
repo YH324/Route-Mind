@@ -191,11 +191,21 @@ def _is_ambiguous_goal(text, has_type_signal, has_location_signal, has_memory):
     return len(clean) <= 12 and any(k in clean for k in AMBIGUOUS_TERMS)
 
 
+def _clarification_area_label(normalized):
+    name = str((normalized or {}).get("center_name") or "").strip()
+    key = str((normalized or {}).get("center_key") or "").strip().lower()
+    if name and key not in ("chengdu", "tianfu"):
+        return name
+    return "当前位置"
+
+
 def _clarification_options(normalized):
+    area = _clarification_area_label(normalized)
     return [
-        {"label": "找餐厅", "goal": "春熙路附近找一家适合现在去的餐厅"},
-        {"label": "逛景点", "goal": "武侯祠附近看景点，安排两小时"},
-        {"label": "喝咖啡", "goal": "太古里附近喝咖啡，顺便逛街"},
+        {"label": "找餐饮", "goal": f"{area}附近找一家适合现在去的餐厅"},
+        {"label": "景点公园", "goal": f"{area}附近看景点或公园，安排两小时"},
+        {"label": "咖啡茶馆", "goal": f"{area}附近喝咖啡或找茶馆，顺便散步"},
+        {"label": "夜间活动", "goal": f"{area}附近晚上喝酒或吃夜宵"},
     ]
 
 

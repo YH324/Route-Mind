@@ -64,7 +64,7 @@ def _chat_url(key, base_key, default):
 
 
 # ========== API Keys ==========
-# 优先级：MiMo -> MiniMax Coding Plan -> GLM -> 规则 fallback
+# 优先级：MiMo -> MiniMax Coding Plan -> GLM -> 本地语义兜底
 MIMO_API_KEY = _env("MIMO_API_KEY", "")
 MIMO_CHAT_URL = _chat_url("MIMO_CHAT_URL", "MIMO_BASE_URL", "https://token-plan-cn.xiaomimimo.com/v1")
 MIMO_MODEL = _env("MIMO_MODEL", "mimo-v2.5-pro")
@@ -77,6 +77,7 @@ GLM_API_KEY = _env("GLM_API_KEY", "")
 GLM_CHAT_URL = _chat_url("GLM_CHAT_URL", "GLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4")
 GLM_MODEL = _env("GLM_MODEL", "glm-4-flash")
 GLM_AUTH_TYPE = _env("GLM_AUTH_TYPE", "bearer")
+INTENT_LLM_FAILURE_COOLDOWN_SECONDS = _env_int("INTENT_LLM_FAILURE_COOLDOWN_SECONDS", 120)
 
 # ========== 服务配置 ==========
 SERVER_HOST = _env("HOST", "127.0.0.1")
@@ -92,6 +93,7 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 DEFAULT_CENTER_LNG = _env_float("CENTER_LNG", 104.06476)
 DEFAULT_CENTER_LAT = _env_float("CENTER_LAT", 30.65705)
 DEFAULT_RADIUS = _env_int("RADIUS", 3000)
+# 兼容历史环境变量；当前规划器会按用户意图推断未明说的时间预算，不再全局套用固定 4 小时。
 DEFAULT_TIME_BUDGET_HOURS = _env_int("TIME_BUDGET", 4)
 
 # 候选池
