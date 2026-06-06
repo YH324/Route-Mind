@@ -1,5 +1,5 @@
 /* ================================================================
-   RouteMind v2.5 — V2 Visual + Full Route Planning
+   RouteMind 智行策 v2.5 — V2 Visual + Full Route Planning
    ================================================================ */
 
 const goalInput = document.getElementById("goalInput");
@@ -87,7 +87,7 @@ const TYPE_COLORS = {
 
 const I18N = {
   zh: {
-    eyebrow: "成都本地生活路线规划", goalLabel: "今天想怎么走？",
+    eyebrow: "本地生活路线规划", goalLabel: "今天想怎么走？",
     goalPlaceholder: "例如：小明：春熙路附近吃火锅\n小红：吃完想逛街\n小明：不要太贵",
     clearInput: "清空", lastGoal: "使用上次目标",
     modeLabel: "用户模式", modeTourist: "游客", modeBusiness: "出差", modeResident: "居民",
@@ -123,13 +123,13 @@ const I18N = {
     themeClear: "清爽", themeWarm: "暖橙", themeNight: "夜游",
     statusReady: "可执行", copyRoute: "复制路线", copyPoi: "复制名单", export: "导出图片",
     advancedShow: "▼ 高级设置", advancedHide: "▲ 收起设置",
-    serviceKicker: "服务范围", serviceTitle: "当前支持成都武侯区与锦江区",
-    serviceBody: "RouteMind 目前使用成都武侯区、锦江区本地数据进行规划。其他城市和区县暂不支持，系统会在查询时提示。",
+    serviceKicker: "服务范围", serviceTitle: "当前在线样例支持成都武侯区与锦江区",
+    serviceBody: "RouteMind 智行策目前使用成都武侯区、锦江区样例数据进行规划。其他城市和区县暂不支持，系统会在查询时提示。",
     serviceAccept: "我知道了",
     mobilePlan: "规划", mobileMap: "地图", mobileResult: "结果",
   },
   en: {
-    eyebrow: "Chengdu local route planner", goalLabel: "What do you want to do?",
+    eyebrow: "Local lifestyle route planner", goalLabel: "What do you want to do?",
     goalPlaceholder: "Example: Ming: hotpot near Chunxi Road\nHong: shopping after dinner\nMing: keep it affordable",
     clearInput: "Clear", lastGoal: "Use Last",
     modeLabel: "User Mode", modeTourist: "Tourist", modeBusiness: "Business", modeResident: "Resident",
@@ -165,8 +165,8 @@ const I18N = {
     themeClear: "Clear", themeWarm: "Warm", themeNight: "Night",
     statusReady: "Ready", copyRoute: "Copy Route", copyPoi: "Copy List", export: "Export",
     advancedShow: "▼ Advanced", advancedHide: "▲ Hide",
-    serviceKicker: "Service Area", serviceTitle: "Currently supports Wuhou and Jinjiang, Chengdu",
-    serviceBody: "RouteMind currently plans with local data from Wuhou and Jinjiang districts in Chengdu. Other cities and districts are not supported yet.",
+    serviceKicker: "Service Area", serviceTitle: "Sample data currently supports Wuhou and Jinjiang, Chengdu",
+    serviceBody: "RouteMind 智行策 currently plans with sample data from Wuhou and Jinjiang districts in Chengdu. Other cities and districts are not supported yet.",
     serviceAccept: "Got it",
     mobilePlan: "Plan", mobileMap: "Map", mobileResult: "Result",
   },
@@ -591,7 +591,7 @@ function routeShareText(v = currentVariants[activeVariantIndex]) {
   if (!v) return "";
   const s = variantStats(v);
   const lines = [
-    `RouteMind - ${variantName(v)}`,
+    `RouteMind 智行策 - ${variantName(v)}`,
     s.isRoute ? `${t("totalTime")}: ${formatTime(s.total)} | ${t("moveTime")}: ${formatDistance(s.distance)} / ${formatTime(s.move)}` : `${t("poiCount")}: ${s.poi}`,
   ];
   const items = (v.route||[]).length ? v.route : (v.recommendations||[]);

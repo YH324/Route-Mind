@@ -1,11 +1,11 @@
 <svg width="1200" height="760" viewBox="0 0 1200 760" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
-  <title id="title">RouteMind desktop workspace sketch</title>
+  <title id="title">RouteMind 智行策 desktop workspace sketch</title>
   <desc id="desc">Three-column web UI sketch with planning controls, central map, and route timeline.</desc>
   <rect width="1200" height="760" fill="#F4F7F6"/>
   <rect x="24" y="22" width="1152" height="716" rx="28" fill="#FFFFFF" stroke="#DDE7E3"/>
 
   <rect x="50" y="50" width="252" height="660" rx="18" fill="#F8FBFA" stroke="#DFE9E5"/>
-  <text x="72" y="86" fill="#12332C" font-family="Arial, sans-serif" font-size="22" font-weight="700">RouteMind</text>
+  <text x="72" y="86" fill="#12332C" font-family="Arial, sans-serif" font-size="22" font-weight="700">RouteMind 智行策</text>
   <text x="72" y="111" fill="#667A74" font-family="Arial, sans-serif" font-size="12">AI 城市路线规划</text>
   <rect x="72" y="136" width="208" height="110" rx="14" fill="#FFFFFF" stroke="#DCE7E2"/>
   <text x="90" y="164" fill="#12332C" font-family="Arial, sans-serif" font-size="13" font-weight="700">今天想怎么走？</text>

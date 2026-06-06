@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>RouteMind Desktop V2</title>
+  <title>RouteMind 智行策 Desktop V2</title>
   <style>
     :root {
       --bg: #f8f3ea;
@@ -823,7 +823,7 @@
   <main class="workspace" id="app">
     <aside class="panel left" aria-label="路线规划输入">
       <div class="brand-row">
-        <div class="brand"><h1>RouteMind</h1><p>成都本地生活路线规划</p></div>
+        <div class="brand"><h1>RouteMind 智行策</h1><p>本地生活路线规划</p></div>
         <div class="brand-mark">R</div>
       </div>
       <div class="segmented lang" aria-label="语言切换"><button class="active" type="button">中文</button><button type="button">EN</button></div>
@@ -921,7 +921,7 @@
       lang = idx === 0 ? "zh" : "en";
       document.querySelectorAll(".lang button").forEach((b, i) => b.classList.toggle("active", i === idx));
       const zh = lang === "zh";
-      document.querySelector(".brand p").textContent = zh ? "成都本地生活路线规划" : "Chengdu local route planner";
+      document.querySelector(".brand p").textContent = zh ? "本地生活路线规划" : "Local lifestyle route planner";
       document.querySelector(".search-card .label").textContent = zh ? "今天想怎么走？" : "What do you want to do?";
       document.querySelector("textarea").value = zh ? "春熙路附近，下午四点想吃火锅，再找一个舒服的地方逛一会儿，不要走太远。" : "Near Chunxi Road, hotpot around 4 PM, then a relaxed place to walk. Keep it close.";
       document.querySelector(".guide-head h3").textContent = zh ? "3 步看懂路线" : "Understand in 3 steps";

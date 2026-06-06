@@ -1,11 +1,11 @@
 <svg width="1200" height="760" viewBox="0 0 1200 760" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
-  <title id="title">RouteMind utility toolbar prototype</title>
+  <title id="title">RouteMind 智行策 utility toolbar prototype</title>
   <desc id="desc">Desktop prototype focused on language switch, map controls, route compare, and export actions.</desc>
   <rect width="1200" height="760" fill="#F4F7F6"/>
   <rect x="24" y="20" width="1152" height="720" rx="28" fill="#FFFFFF" stroke="#DDE7E3"/>
 
   <rect x="48" y="48" width="260" height="664" rx="20" fill="#F8FBFA" stroke="#DDE7E3"/>
-  <text x="72" y="86" fill="#12332C" font-family="Arial, sans-serif" font-size="22" font-weight="700">RouteMind</text>
+  <text x="72" y="86" fill="#12332C" font-family="Arial, sans-serif" font-size="22" font-weight="700">RouteMind 智行策</text>
   <text x="72" y="111" fill="#667A74" font-family="Arial, sans-serif" font-size="12">工具化路线规划</text>
   <rect x="72" y="134" width="212" height="38" rx="19" fill="#E9F3F0"/>
   <rect x="78" y="140" width="98" height="26" rx="13" fill="#12332C"/>
