@@ -3,7 +3,7 @@
 
 职责：
 1. 接收前端请求参数
-2. 通过 MockApiClient 获取数据
+2. 通过数据仓库/POI 适配器获取数据
 3. 调用 route_planner_v3.build_plan_v3() 生成路线
 4. 格式化返回前端
 """
@@ -15,11 +15,71 @@ from data_repository import RepositoryError, repository
 from interaction_intelligence import interaction_manager
 from route_planner_v3 import build_plan_v3
 
+SERVICE_AREA = {
+    "city": "成都",
+    "districts": ["武侯区", "锦江区"],
+    "description": "当前数据覆盖成都武侯区、锦江区，暂不支持其他城市或区县。",
+}
+
 # 城市坐标映射
 CITY_CENTERS = {
-    "chengdu": {"lng": 104.047296, "lat": 30.674447, "name": "天府广场"},
-    "chunxi":  {"lng": 104.082,    "lat": 30.657,    "name": "春熙路"},
+    "chengdu": {"lng": 104.06476, "lat": 30.65705, "name": "天府广场"},
+    "tianfu": {"lng": 104.06476, "lat": 30.65705, "name": "天府广场"},
+    "chunxi":  {"lng": 104.08099, "lat": 30.65732, "name": "春熙路"},
+    "taikooli": {"lng": 104.08126, "lat": 30.65335, "name": "太古里"},
+    "ifs": {"lng": 104.0799, "lat": 30.6557, "name": "成都 IFS"},
+    "jinli": {"lng": 104.0487, "lat": 30.6482, "name": "锦里"},
+    "wuhouci": {"lng": 104.0473, "lat": 30.6469, "name": "武侯祠"},
+    "jiuyanqiao": {"lng": 104.0832, "lat": 30.6412, "name": "九眼桥"},
+    "languifang": {"lng": 104.0846, "lat": 30.6443, "name": "兰桂坊"},
+    "wangjiang": {"lng": 104.0803, "lat": 30.6224, "name": "望江路"},
 }
+
+LOCAL_LANDMARKS = [
+    ("武侯祠", "wuhouci"),
+    ("锦里", "jinli"),
+    ("太古里", "taikooli"),
+    ("IFS", "ifs"),
+    ("ifs", "ifs"),
+    ("春熙路", "chunxi"),
+    ("春熙", "chunxi"),
+    ("天府广场", "tianfu"),
+    ("九眼桥", "jiuyanqiao"),
+    ("兰桂坊", "languifang"),
+    ("望江楼", "wangjiang"),
+    ("望江", "wangjiang"),
+]
+
+UNSUPPORTED_PLACE_TERMS = [
+    "广州", "广州塔", "重庆", "解放碑", "洪崖洞", "北京", "上海", "深圳", "杭州", "西安",
+    "南京", "武汉", "长沙", "昆明", "贵阳", "大理", "丽江", "峨眉", "乐山", "都江堰",
+    "青羊区", "成华区", "金牛区", "高新区", "双流", "龙泉", "郫都", "温江", "新都",
+]
+
+
+def _detect_unsupported_area(goal, city):
+    city_key = str(city or "chengdu").lower()
+    if city_key not in ("chengdu", "tianfu", "chunxi", "taikooli", "ifs", "jinli", "wuhouci", "jiuyanqiao", "languifang", "wangjiang"):
+        return city
+    for term in UNSUPPORTED_PLACE_TERMS:
+        if term in goal:
+            return term
+    return None
+
+
+def _infer_center_key(goal, requested_city):
+    city_key = str(requested_city or "chengdu")
+    if city_key in CITY_CENTERS and city_key not in ("chengdu",):
+        return city_key
+    matched = []
+    for keyword, center_key in LOCAL_LANDMARKS:
+        idx = goal.find(keyword)
+        if idx >= 0:
+            matched.append((idx, -len(keyword), center_key))
+    if matched:
+        matched.sort()
+        return matched[0][2]
+    return "chengdu"
 
 
 def _coerce_radius(value, default=3000):
@@ -54,19 +114,33 @@ def _normalize_payload(payload):
         return None, {"ok": False, "error": "目标描述过长，请控制在500字以内", "error_code": "GOAL_TOO_LONG"}
 
     city = str(payload.get("city", "chengdu") or "chengdu")
+    unsupported_area = _detect_unsupported_area(goal, city)
+    if unsupported_area:
+        return None, {
+            "ok": False,
+            "error": "{}暂不在服务范围内。{}".format(unsupported_area, SERVICE_AREA["description"]),
+            "error_code": "UNSUPPORTED_SERVICE_AREA",
+            "service_area": SERVICE_AREA,
+        }
     user_mode = str(payload.get("user_mode", "tourist") or "tourist")
     radius = _coerce_radius(payload.get("radius", 3000))
 
-    center = CITY_CENTERS.get(city, CITY_CENTERS["chengdu"])
+    center_key = _infer_center_key(goal, city)
+    center = CITY_CENTERS.get(center_key, CITY_CENTERS["chengdu"])
+    has_explicit_center = payload.get("center_lat") is not None or payload.get("center_lng") is not None
     center_lat, center_lng = _coerce_location(payload, center)
 
     normalized = {
         "goal": goal,
-        "city": city,
+        "city": "chengdu",
+        "requested_city": city,
         "user_mode": user_mode,
         "radius": radius,
         "center_lat": center_lat,
         "center_lng": center_lng,
+        "center_name": center["name"] if not has_explicit_center else payload.get("center_name", center["name"]),
+        "center_key": center_key,
+        "service_area": SERVICE_AREA,
     }
     return normalized, None
 
@@ -100,8 +174,8 @@ def run_agent(payload, request_id=None):
     Args:
         payload: {
             "goal": "春熙路附近，下午四点想吃火锅",
-            "session_id": "demo-session",  # 可选，会话记忆
-            "user_id": "demo-user",        # 可选，长期轻画像
+            "session_id": "default-session",  # 可选，会话记忆
+            "user_id": "sample-user",         # 可选，长期轻画像
             "dialogue": [{"speaker_id": "小明", "text": "想吃火锅"}],  # 可选，多人对话
             "feedback": {"avoid_tags": ["KTV"]},  # 可选，写入长期轻画像
             "center_lat": 30.657,       # 可选，默认天府广场
@@ -172,6 +246,10 @@ def run_agent(payload, request_id=None):
             user_mode=user_mode,
             interaction_context=interaction_context,
         )
+        result["service_area"] = SERVICE_AREA
+        result["center"]["name"] = normalized.get("center_name")
+        result["center"]["center_key"] = normalized.get("center_key")
+        result["center"]["requested_city"] = normalized.get("requested_city")
         t_plan = (time.time() - t0) * 1000
         interaction_manager.record_result(normalized, result, interaction_context)
 
@@ -183,6 +261,7 @@ def run_agent(payload, request_id=None):
                 "request_id": request_id,
                 "result": result,
                 "interaction": result.get("constraints", {}).get("interaction", {}),
+                "persistence": interaction_manager.memory.persistence_status(),
                 "performance": {"load_ms": round(t_load), "plan_ms": round(t_plan), "total_ms": round(t_load + t_plan)},
                 "notice": notice,
             }
@@ -192,6 +271,7 @@ def run_agent(payload, request_id=None):
             "request_id": request_id,
             "result": result,
             "interaction": result.get("constraints", {}).get("interaction", {}),
+            "persistence": interaction_manager.memory.persistence_status(),
             "notice": interaction_context.get("clarification"),
             "performance": {
                 "load_ms": round(t_load),

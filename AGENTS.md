@@ -7,9 +7,9 @@
 ```
 用户输入 → 意图解析 → API客户端 → 候选筛选 → 评分排序 → 路线构建 → 时间轴输出
                                 ↓
-                        MockApiClient（读取本地JSON）
+                        本地 POI 数据适配器（读取本地JSON）
                                 ↓
-                    POI / GT评分 / UGC / 路网 / 营业时间
+                    POI / 评分聚合 / UGC / 路网 / 营业时间
 ```
 
 ### 1.2 未来全国推广架构
@@ -23,7 +23,7 @@
 ```
 
 **三层解耦设计**：
-1. **API层**（`mock_api/`）：接口对标高德/美团，当前读本地JSON，未来换HTTP调用，规划引擎零改动
+1. **数据适配层**（`mock_api/`）：接口对标高德/美团，当前读本地JSON，未来换HTTP调用，规划引擎零改动
 2. **规划层**（`route_planner_v3.py`）：纯算法，不感知数据来源
 3. **缓存层**（`poi_knn_graph.py` + `spatial_index`）：加速重复查询，全国推广时迁移到Redis
 
@@ -36,8 +36,8 @@
 | 模块 | 文件 | 职责 |
 |------|------|------|
 | API接入 | `llm_clients.py` | MiMo/MiniMax/GLM 等兼容聊天接口调用 |
-| POI数据 | `mock_api/__init__.py` + `wuhou_jinjiang_pois.json` | 加载47,045 POI，按接口对标真实POI搜索 |
-| UGC/GT索引 | `output/gt_index.json` + `output/type_index.json` | 精简评分索引与POI类型映射 |
+| POI数据 | `mock_api/__init__.py` + `wuhou_jinjiang_pois.json` | 加载47,045 POI，按统一适配器接口对标真实POI搜索 |
+| 评分/类型索引 | `output/gt_index.json` + `output/type_index.json` | 评分聚合索引与POI类型映射 |
 | 类型修正 | `ugc_type_profiles.py` | 36类型配置、名称启发式修正 |
 | 路网 | `road_network.py` | Dijkstra最短路径 + LRU缓存 |
 | 路网生成 | `generate_road_network.py` | 从POI坐标模拟路网 |
@@ -53,7 +53,7 @@
 ### 3.1 入口函数
 ```python
 build_plan_v3(goal, pois, gt_data,
-              center_lng=104.047296, center_lat=30.674447, radius=3000,
+              center_lng=104.06476, center_lat=30.65705, radius=3000,
               hours_path="poi_business_hours.json",
               network_path="chengdu_road_network.json",
               spatial_index=None, type_index=None,
@@ -61,15 +61,27 @@ build_plan_v3(goal, pois, gt_data,
               interaction_context=None)
 ```
 
-### 3.2 评分公式
-```python
-score = base_score + diversity_bonus - distance_penalty
+### 3.2 排序模型与推荐依据
+`route_planner_v3.py` 使用 `feature_ranker_v1.4` 做候选排序。模型不只返回总分，还会在每个 POI 上输出 `recommendation_basis`，用于解释推荐依据和排查异常。
 
-base_score = gt_overall + tag_match_bonus
-tag_match_bonus = 5.0 if POI类型 in user_tags else 0.0
-diversity_bonus = 20.0 if 该类型尚未在路线中出现 else 0.0
-distance_penalty = min(travel_time_min / 10, 20)  # 强化距离惩罚
-```
+主要特征包括：
+
+- `quality_score`：UGC/评分聚合质量分。
+- `type_weight`：游客、出差、居民三种模式下的类型权重。
+- `preference_bonus`：用户自然语言、会话记忆、多人对话中命中的偏好。
+- `review_count_estimate` / `popularity_adjustment`：基于类型评论画像、商圈密度和 GT 质量分估算评价样本量，作为热度/名气信号参与排序。
+- `brand_popularity_bonus`：从候选池和全量 POI 数据中统计出的品牌根、分店数、核心商圈店、历史质量等识别信号，避免只按单一分数把小众或误分类 POI 顶到前面。
+- `entity_quality_adjustment` / `entity_quality_signals`：门店实体可信度，覆盖火锅、茶馆、咖啡、中餐、公园、商场、超市、酒吧/小酒馆等场景；优先完整餐厅/真实茶馆/咖啡门店/真实公园或商超/真实酒吧，降级麻辣烫/冒菜/甜品误分类、共享充电、酒店/会展/茶饮/棋牌/商业广场/健身 club 等错配 POI。
+- `sequence` 严格约束：组合需求里的具体类型必须精确命中，避免“午餐+咖啡”被泛化成火锅+中餐，或“喝酒+夜宵”被泛化成农家乐+火锅。
+- `llm_candidate_review_bonus`：配置 LLM Provider 后，对已筛出的真实候选 POI 做约束式评审重排；LLM 只能返回候选 `poi_id`，不能生成新地点。
+- `semantic_need_adjustment`：清淡、约会、亲子、商务、拍照等语义需求匹配。
+- `density_bonus` 与 `nearest_same_type_m`：空间密度和同类稀缺性信息。
+- `open_at_arrival`：抵达时段是否营业。
+- `network_connected`、`distance_m`、`travel_time_min`：路网可达性和移动成本。
+- `type_consistency_penalty`：名称推断类型与索引类型冲突时降权。
+- `route_rank_score`：路线阶段叠加语义检索、变体偏好、顺序约束、距离惩罚后的最终排序分。
+
+整次规划还会返回 `result.model.candidate_pipeline`，记录原始 POI 数、空间过滤、名称过滤、类型过滤、候选池截断、类型修正和语义检索命中数。`app_service.py` 还会返回 `service_area`，并对成都武侯区、锦江区以外的城市/区县返回 `UNSUPPORTED_SERVICE_AREA`。
 
 ### 3.3 硬约束
 ```python
@@ -83,7 +95,7 @@ if total_time + travel_time + stay > time_budget: break  # 总时间预算
 - ✅ 营业时间可行性过滤
 - ✅ 类型多样性奖励
 - ✅ 低价值购物类排除（布艺/成衣/水果/编织/名酒）
-- ⚠️ GT均值3.41（低于v2的4.38，多样性牺牲部分评分）
+- ⚠️ 评分均值3.41（低于v2的4.38，多样性会牺牲部分单点评分）
 - ⚠️ 部分单段移动仍>20min（需按模式加严约束）
 
 ---
@@ -165,7 +177,7 @@ def apply_mode_config(plan_builder, user_mode):
 | POI聚合统计 | 平台匿名数据 | 实时人流规避、热门度排序 | 匿名，N≥100 |
 | 匿名群体信号 | 聚合数据 | "周六晚上春熙路68%选火锅" | 无法反推个人 |
 
-**绝对禁区**：手机号、真实身份账号、长期位置轨迹、消费记录、社交关系。当前比赛版只允许用演示 `user_id` 保存低敏偏好/避让/饮食限制，并提供 `/api/profile/clear` 删除入口；详见 `PRIVACY.md`。
+**绝对禁区**：手机号、真实身份账号、长期位置轨迹、消费记录、社交关系。当前只允许用用户提供的 `user_id` 保存低敏偏好/避让/饮食限制，并提供 `/api/profile/clear` 删除入口；详见 `PRIVACY.md`。
 
 ### 5.1 模拟数据 vs 真实数据：预研策略
 
@@ -175,7 +187,7 @@ def apply_mode_config(plan_builder, user_mode):
 |--------|------------|----------------|---------|
 | POI本体 | 高德Excel清洗（47k） | 高德/百度POI Search API | 低 |
 | UGC评论 | 规则生成7.75M条 | 美团/点评/小红书真实评论 | 中（需商务合作） |
-| GT评分 | 规则生成overall | 平台真实评分 | 低 |
+| 评分聚合 | 规则生成overall | 平台真实评分/评论聚合 | 低 |
 | 路网距离 | k近邻模拟图+Dijkstra | 高德路径规划API | 低 |
 | 营业时间 | 按类型规则生成 | 平台真实营业数据 | 低 |
 
@@ -231,7 +243,7 @@ def apply_mode_config(plan_builder, user_mode):
 ```
 demo/
 ├── output/                      # 索引数据和缓存
-│   ├── gt_index.json                     # 精简GT评分索引
+│   ├── gt_index.json                     # 评分/评论聚合索引
 │   ├── type_index.json                   # POI类型索引
 │   ├── spatial_index.json                # 500m网格空间索引
 │   ├── poi_embeddings.npy                # 语义向量
@@ -245,7 +257,7 @@ demo/
 ├── llm_clients.py               # API客户端
 ├── config.py                    # 配置与.env加载
 ├── semantic_search.py           # 语义检索
-├── ugc_type_profiles.py         # 类型配置与GT评分
+├── ugc_type_profiles.py         # 类型配置与评分特征
 ├── generate_road_network.py     # 路网模拟生成
 ├── road_network.py              # Dijkstra路径计算
 ├── generate_business_hours.py   # 营业时间生成
@@ -303,12 +315,15 @@ WARMUP_ON_START=0
 MIMO_API_KEY=
 MINIMAX_API_KEY=
 GLM_API_KEY=
+ENABLE_LLM_CANDIDATE_REVIEW=1
+LLM_REVIEW_CANDIDATE_TOP_N=12
+LLM_REVIEW_BONUS=1.2
 PERSIST_KNN_CACHE=0
 ```
 
-`config.py` 支持无前缀变量和 `HACKATHON_` 前缀变量；LLM 客户端当前使用 `/chat/completions` 兼容协议。
+`config.py` 支持无前缀变量，并兼容旧版带前缀变量；LLM 客户端当前使用 `/chat/completions` 兼容协议。
 
-本地比赛服务入口为 `run_server.py`。推荐用 `python run_server.py --warmup` 启动；`/api/health` 检查进程状态，`/api/ready` 检查本地数据资产和仓库加载状态。
+本地服务入口为 `run_server.py`。推荐用 `python run_server.py --warmup` 启动；`/api/health` 检查进程状态，`/api/ready` 检查本地数据资产和仓库加载状态。
 
 ---
 
@@ -318,4 +333,4 @@ PERSIST_KNN_CACHE=0
 2. **高峰规避**：接入排队数据，实现居民模式高峰降权
 3. **交互智能校准**：抽样校验 `NeedInferer` / `PoiMatcher` 的标签准确率，补充更多UGC关键词规则
 4. **A/B测试**：三种模式生成路线对比，收集用户偏好反馈
-5. **真实API替换**：按 `MockApiClient` 接口实现 `HttpApiClient`
+5. **真实API替换**：按统一 POI 适配器接口实现 `HttpApiClient`

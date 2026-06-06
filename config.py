@@ -2,7 +2,7 @@
 全局配置管理
 
 所有可配置参数集中在此，支持环境变量覆盖。
-环境变量名统一前缀：HACKATHON_
+支持无前缀环境变量；历史 HACKATHON_ 前缀仍兼容。
 """
 import os
 
@@ -31,7 +31,7 @@ _load_dotenv()
 
 
 def _env(key, default=""):
-    """读取环境变量，支持 HACKATHON_ 前缀"""
+    """读取环境变量，兼容历史 HACKATHON_ 前缀。"""
     return os.environ.get(f"HACKATHON_{key}", os.environ.get(key, default))
 
 
@@ -89,8 +89,8 @@ WARMUP_ON_START = _env_bool("WARMUP_ON_START", False)
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 
 # ========== 规划引擎参数 ==========
-DEFAULT_CENTER_LNG = _env_float("CENTER_LNG", 104.047296)
-DEFAULT_CENTER_LAT = _env_float("CENTER_LAT", 30.674447)
+DEFAULT_CENTER_LNG = _env_float("CENTER_LNG", 104.06476)
+DEFAULT_CENTER_LAT = _env_float("CENTER_LAT", 30.65705)
 DEFAULT_RADIUS = _env_int("RADIUS", 3000)
 DEFAULT_TIME_BUDGET_HOURS = _env_int("TIME_BUDGET", 4)
 
@@ -117,6 +117,11 @@ CONCRETE_TYPE_LIMIT = _env_int("CONCRETE_TYPE_LIMIT", 1)
 # 语义搜索
 SEMANTIC_TOP_K = _env_int("SEMANTIC_TOP_K", 80)
 SEMANTIC_BOOST = _env_float("SEMANTIC_BOOST", 2.5)
+
+# 候选集大模型评审：只重排已存在的 POI，不允许生成新地点。
+ENABLE_LLM_CANDIDATE_REVIEW = _env_bool("ENABLE_LLM_CANDIDATE_REVIEW", True)
+LLM_REVIEW_CANDIDATE_TOP_N = _env_int("LLM_REVIEW_CANDIDATE_TOP_N", 12)
+LLM_REVIEW_BONUS = _env_float("LLM_REVIEW_BONUS", 1.2)
 
 # 营业时间自动调整
 AUTO_TIME_PERCENTILE = _env_int("AUTO_TIME_PERCENTILE", 60)
@@ -146,3 +151,4 @@ VARIANT_PARAMS = {
 
 # 日志
 LOG_LEVEL = _env("LOG_LEVEL", "INFO")
+LOG_FORMAT = _env("LOG_FORMAT", "text")  # text | json

@@ -24,9 +24,17 @@ MAX_DIALOGUE_MESSAGES = 30
 
 
 LOCATION_ALIASES = {
-    "春熙路": {"lng": 104.082, "lat": 30.657, "name": "春熙路"},
-    "太古里": {"lng": 104.082, "lat": 30.657, "name": "春熙路"},
-    "天府广场": {"lng": 104.047296, "lat": 30.674447, "name": "天府广场"},
+    "春熙路": {"lng": 104.08099, "lat": 30.65732, "name": "春熙路"},
+    "太古里": {"lng": 104.08126, "lat": 30.65335, "name": "太古里"},
+    "天府广场": {"lng": 104.06476, "lat": 30.65705, "name": "天府广场"},
+    "成都IFS": {"lng": 104.0799, "lat": 30.6557, "name": "成都 IFS"},
+    "IFS": {"lng": 104.0799, "lat": 30.6557, "name": "成都 IFS"},
+    "锦里": {"lng": 104.0487, "lat": 30.6482, "name": "锦里"},
+    "武侯祠": {"lng": 104.0473, "lat": 30.6469, "name": "武侯祠"},
+    "九眼桥": {"lng": 104.0832, "lat": 30.6412, "name": "九眼桥"},
+    "兰桂坊": {"lng": 104.0846, "lat": 30.6443, "name": "兰桂坊"},
+    "望江楼": {"lng": 104.0803, "lat": 30.6224, "name": "望江路"},
+    "望江": {"lng": 104.0803, "lat": 30.6224, "name": "望江路"},
 }
 
 TYPE_KEYWORDS = {
@@ -34,7 +42,8 @@ TYPE_KEYWORDS = {
     "茶馆": "茶馆", "喝茶": "茶馆", "咖啡": "饮品", "奶茶": "饮品",
     "甜品": "甜品", "蛋糕": "甜品", "中餐": "中餐", "川菜": "中餐",
     "粤菜": "中餐", "牛肉": "中餐", "商场": "商场", "逛街": "商场",
-    "购物": "购物", "公园": "公园", "景点": "景点", "博物馆": "景点",
+    "购物": "购物", "超市": "超市", "便利店": "便利店", "小吃": "小吃",
+    "买菜": "超市", "采购": "超市", "公园": "公园", "景点": "景点", "博物馆": "景点",
     "游乐园": "游乐园", "电影": "电影院", "影院": "电影院",
     "酒吧": "酒吧", "KTV": "KTV", "健身": "健身", "按摩": "按摩SPA",
 }
@@ -437,6 +446,7 @@ class MemoryStore:
         self._lock = threading.RLock()
         self._profiles = _load_json(profile_path, {"users": {}})
         self._sessions = {}
+        self.profile_persist_error = None
 
     def get_profile(self, user_id, create=True):
         if not user_id:
@@ -456,7 +466,15 @@ class MemoryStore:
 
     def save_profiles(self):
         with self._lock:
-            _atomic_save_json(self.profile_path, self._profiles)
+            try:
+                _atomic_save_json(self.profile_path, self._profiles)
+                self.profile_persist_error = None
+                return True
+            except OSError as exc:
+                # Route planning must continue even when the runtime directory is
+                # read-only. Profiles remain available in memory for this process.
+                self.profile_persist_error = str(exc)
+                return False
 
     def get_session(self, session_id, create=True):
         session_id = session_id or "anonymous"
@@ -492,6 +510,13 @@ class MemoryStore:
             if cleared:
                 self.save_profiles()
             return cleared
+
+    def persistence_status(self):
+        return {
+            "profile_path": self.profile_path,
+            "profile_persisted": self.profile_persist_error is None,
+            "profile_persist_error": self.profile_persist_error,
+        }
 
     def _purge_expired(self):
         cutoff = _now() - SESSION_TTL_SECONDS

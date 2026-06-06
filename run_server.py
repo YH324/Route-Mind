@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Production-style local service entrypoint for the competition demo."""
+"""Local service entrypoint for RouteMind."""
 import argparse
 import os
 

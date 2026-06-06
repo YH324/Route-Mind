@@ -3,87 +3,197 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>智能路线规划</title>
+  <title>RouteMind</title>
   <link rel="stylesheet" href="/styles.css">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
 </head>
 <body>
-  <main class="page">
-    <section class="hero">
-      <div class="hero-copy">
-        <h1>智能路线规划</h1>
-        <p class="subtitle">输入自然语言目标，自动生成带时间轴的可执行路线方案</p>
+  <div class="service-modal" id="serviceModal" role="dialog" aria-modal="true" aria-labelledby="serviceTitle">
+    <div class="service-dialog">
+      <div>
+        <p class="service-kicker" data-i18n="serviceKicker">服务范围</p>
+        <h2 id="serviceTitle" data-i18n="serviceTitle">当前支持成都武侯区与锦江区</h2>
+        <p data-i18n="serviceBody">RouteMind 目前使用成都武侯区、锦江区本地数据进行规划。其他城市和区县暂不支持，系统会在查询时提示。</p>
       </div>
-      <div class="hero-panel">
-        <label class="field">
-          <span>你的目标</span>
-          <textarea id="goalInput" rows="3" placeholder="例如：春熙路附近，下午四点想吃火锅">春熙路附近，下午四点想吃火锅</textarea>
-        </label>
-        <div class="controls">
-          <label class="field compact">
-            <span>会话ID</span>
-            <input id="sessionInput" type="text" value="demo-session" placeholder="demo-session">
-          </label>
-          <label class="field compact">
-            <span>用户ID</span>
-            <input id="userInput" type="text" value="demo-user" placeholder="可选">
-          </label>
-          <label class="field compact">
-            <span>用户模式</span>
-            <select id="modeSelect">
-              <option value="tourist" selected>游客</option>
-              <option value="business">出差</option>
-              <option value="resident">居民</option>
-            </select>
-          </label>
-          <label class="field compact">
-            <span>位置</span>
-            <select id="centerSelect">
-              <option value="chunxi">春熙路</option>
-              <option value="chengdu">天府广场</option>
-            </select>
-          </label>
-          <label class="field compact">
-            <span>搜索半径</span>
-            <select id="radiusSelect">
-              <option value="2000">2km</option>
-              <option value="3000" selected>3km</option>
-              <option value="5000">5km</option>
-            </select>
-          </label>
-          <div class="field compact">
-            <span>定位</span>
-            <button id="locateButton" class="secondary" type="button">使用当前位置</button>
+      <div class="service-actions">
+        <button id="serviceAcceptButton" class="primary" data-i18n="serviceAccept">我知道了</button>
+      </div>
+    </div>
+  </div>
+  <main class="workspace" id="app">
+    <!-- Left -->
+    <aside class="panel left">
+      <div class="brand-row">
+        <div class="brand"><h1>RouteMind</h1><p id="brandSubtitle" style="color:var(--muted);font-size:11px;margin-top:2px;">成都本地生活路线规划</p></div>
+        <div class="brand-mark">R</div>
+      </div>
+
+      <div class="segmented lang">
+        <button id="langZhButton" class="active" data-lang="zh">中文</button>
+        <button id="langEnButton" data-lang="en">EN</button>
+      </div>
+
+      <div class="search-card">
+        <div class="section-head">
+          <span class="label" data-i18n="goalLabel">今天想怎么走？</span>
+          <button class="link-btn" id="clearGoalButton" data-i18n="clearInput">清空</button>
+        </div>
+        <textarea id="goalInput" rows="3" data-i18n-placeholder="goalPlaceholder">春熙路附近，下午四点想吃火锅</textarea>
+        <div class="prompt-row" id="promptChips">
+          <button data-goal="春熙路附近半日游，想逛景点也想喝茶">春熙半日</button>
+          <button data-goal="锦里附近吃小吃，再去武侯祠周边逛逛">锦里武侯</button>
+          <button data-goal="九眼桥附近晚上喝酒，顺便找点夜宵">九眼桥夜游</button>
+          <button data-goal="太古里附近逛街喝咖啡">太古里咖啡</button>
+          <button data-goal="天府广场附近出差，1小时内找午餐和咖啡">出差午餐</button>
+        </div>
+      </div>
+
+      <div class="segmented mode">
+        <button class="active" data-mode="tourist" data-i18n="modeTourist">游客</button>
+        <button data-mode="business" data-i18n="modeBusiness">出差</button>
+        <button data-mode="resident" data-i18n="modeResident">居民</button>
+      </div>
+
+      <button id="runButton" class="primary" data-i18n="planButton">
+        <span id="btnText">开始规划</span>
+      </button>
+      <div id="statusRow" class="status-row">
+        <span id="statusDot" class="status-dot"></span>
+        <span id="statusText" data-i18n="idle">待命中</span>
+      </div>
+
+      <details class="advanced-block">
+        <summary data-i18n="advancedShow">▼ 高级</summary>
+        <div class="advanced-body">
+          <div class="quick-grid">
+            <div class="mini-card">
+              <span data-i18n="centerLabel">位置</span>
+              <select id="centerSelect">
+                <option value="chunxi" selected>春熙路</option>
+                <option value="chengdu">天府广场</option>
+                <option value="taikooli">太古里</option>
+                <option value="ifs">成都 IFS</option>
+                <option value="jinli">锦里</option>
+                <option value="wuhouci">武侯祠</option>
+                <option value="jiuyanqiao">九眼桥</option>
+                <option value="wangjiang">望江路</option>
+              </select>
+            </div>
+            <div class="mini-card">
+              <span data-i18n="radiusLabel">半径</span>
+              <select id="radiusSelect">
+                <option value="2000">2km</option>
+                <option value="3000" selected>3km</option>
+                <option value="5000">5km</option>
+              </select>
+            </div>
+          </div>
+          <button id="locateButton" class="compact-btn full" data-i18n="useLocation">📍 定位</button>
+          <input id="sessionInput" type="text" value="default-session">
+          <input id="userInput" type="text" placeholder="用户 ID">
+          <div class="btn-row">
+            <button id="clearSessionButton" class="compact-btn" data-i18n="clearSession">清会话</button>
+            <button id="clearProfileButton" class="compact-btn" data-i18n="clearProfile">清画像</button>
           </div>
         </div>
-        <div id="locationText" class="location-box">默认：春熙路 (104.082, 30.657)</div>
-        <div class="inline-actions">
-          <button id="clearSessionButton" class="secondary" type="button">清除会话记忆</button>
-          <button id="clearProfileButton" class="secondary" type="button">清除长期画像</button>
+      </details>
+
+      <div class="segmented skin">
+        <button class="active" data-skin="clear" data-i18n="themeClear">清爽</button>
+        <button data-skin="warm" data-i18n="themeWarm">暖橙</button>
+        <button data-skin="night" data-i18n="themeNight">夜游</button>
+      </div>
+    </aside>
+
+    <!-- Center: Map -->
+    <section class="panel map-panel">
+      <div class="map-canvas" id="illustratedMap">
+        <div class="map-grid"></div>
+        <div class="park p1"></div><div class="park p2"></div>
+        <div class="building b1"></div><div class="building b2"></div><div class="building b3"></div><div class="building b4"></div>
+        <div class="tree t1"></div><div class="tree t2"></div><div class="tree t3"></div><div class="tree t4"></div>
+        <div class="flower f1"></div><div class="flower f2"></div><div class="flower f3"></div>
+        <div class="road r1"></div><div class="road r2"></div><div class="road r3"></div><div class="road r4"></div><div class="road r5"></div><div class="road r6"></div>
+        <div class="radius-ring"></div>
+        <svg class="map-route" viewBox="0 0 780 864" preserveAspectRatio="none" aria-hidden="true">
+          <path id="routePath" d="" stroke="var(--green)" stroke-width="9" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <div id="mapPoiLayer"></div>
+      </div>
+      <div id="map"></div>
+
+      <div class="map-top">
+        <div class="map-pill" id="mapCaption">春熙路 3km</div>
+        <div class="layer-group">
+          <button class="map-pill active" data-layer="route"><span class="dot" style="--dot:var(--green)"></span><span data-i18n="layerRoute">路线</span></button>
+          <button class="map-pill active" data-layer="poi"><span class="dot" style="--dot:var(--orange)"></span><span data-i18n="layerPoi">美食</span></button>
+          <button class="map-pill" data-layer="open"><span class="dot" style="--dot:var(--blue)"></span><span data-i18n="layerOpen">景点</span></button>
         </div>
-        <button id="runButton" class="primary">开始规划</button>
-        <p id="statusText" class="status">待命中</p>
+      </div>
+
+      <div class="map-tools">
+        <button id="zoomInButton" class="icon-btn">+</button>
+        <button id="zoomOutButton" class="icon-btn">-</button>
+        <button id="recenterButton" class="compact-btn">归中</button>
+      </div>
+
+      <div class="toast" id="toast"></div>
+
+      <div id="planningProgress" class="planning-progress" hidden>
+        <span data-step="0" data-i18n="stepIntent">解析意图</span>
+        <span data-step="1" data-i18n="stepPoi">筛选地点</span>
+        <span data-step="2" data-i18n="stepOpen">校验营业</span>
+        <span data-step="3" data-i18n="stepRoute">生成路线</span>
       </div>
     </section>
 
-    <section id="resultSection" class="results" hidden>
-      <div class="result-header">
-        <h2 id="resultTitle">规划结果</h2>
-        <div id="resultMeta" class="meta"></div>
+    <!-- Right -->
+    <aside class="panel right">
+      <div class="result-head">
+        <div>
+          <h2 id="resultTitle" data-i18n="emptyTitle">输入目标后生成路线</h2>
+          <p id="resultDesc" data-i18n="emptyDesc">选择适合你的方案</p>
+        </div>
+        <span class="status" id="resultStatus" hidden data-i18n="statusReady">可执行</span>
       </div>
 
-      <div class="map-container">
-        <div id="map"></div>
-      </div>
-
+      <div id="resultMeta" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:2px;"></div>
       <div id="variantTabs" class="variant-tabs"></div>
 
-      <div id="variantPanels" class="variant-panels"></div>
+      <label class="diff-toggle">
+        <input id="diffOnlyToggle" type="checkbox">
+        <span data-i18n="diffOnly">只看差异</span>
+      </label>
+
+      <div id="variantPanels" class="variant-panels">
+        <div class="empty-card">
+          <p data-i18n="emptyHint">输入常用目标即可开始规划</p>
+        </div>
+      </div>
+
+      <div id="whyBox" class="why-box" hidden>
+        <h3 data-i18n="whyTitle">推荐理由</h3>
+        <ul id="whyList"></ul>
+      </div>
+
+      <div id="emptyFixes" class="empty-fixes" hidden>
+        <button data-fix="radius" data-i18n="fixRadius">扩大半径</button>
+        <button data-fix="time" data-i18n="fixTime">放宽时间</button>
+        <button data-fix="mode" data-i18n="fixMode">切换模式</button>
+      </div>
+
+      <div class="actions">
+        <button class="action-btn" id="copyRouteButton" data-i18n="copyRoute" disabled>复制路线</button>
+        <button class="action-btn" id="copyPoiButton" data-i18n="copyPoi" disabled>复制名单</button>
+        <button class="action-btn" id="exportButton" data-i18n="export" disabled>导出</button>
+      </div>
 
       <div class="perf-bar">
-        数据加载 <span id="loadMs">-</span>ms | 路线规划 <span id="planMs">-</span>ms | 总计 <span id="totalMs">-</span>ms
+        <span data-i18n="perfLoad">加载</span> <strong id="loadMs">-</strong>ms
+        <span data-i18n="perfPlan">规划</span> <strong id="planMs">-</strong>ms
+        <span data-i18n="perfTotal">总计</span> <strong id="totalMs">-</strong>ms
       </div>
-    </section>
+    </aside>
   </main>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
