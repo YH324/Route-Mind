@@ -14,6 +14,7 @@ routemind*.tar.gz
 _check_server.py
 _check_*.py
 _deploy_*.py
+_nginx.py
 take_screenshot.py
 server_launcher.py
 web/backup/
