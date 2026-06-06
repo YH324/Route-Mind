@@ -38,8 +38,11 @@
 - [ ] 低价值 POI 过滤覆盖停业/装修、入口/门岗、停车/快递/充电、民宿房源、普通销售经营点
 - [ ] 单点“逛街/购物”优先真实商场本体，非购物路线不使用普通购物或 `其他` 类型凑点
 - [ ] 路网起点不可用时的 `start_fallback` 降级可观测
-- [ ] 严格时间/路网约束下无法构成路线时返回“候选组合”，不硬凑低质量路线
-- [ ] `feature_ranker_v1.4` 数据驱动排序信号可观测：`review_count_estimate`、`popularity_adjustment`、`brand_popularity_bonus`、`brand_signal`、`entity_quality_adjustment`、`entity_quality_signals`
+- [ ] 严格时间/路网约束下无法构成主路线时返回带时间轴和 `polyline` 的“顺序候选路线”，不硬凑低质量路线
+- [ ] `feature_ranker_v1.5` 数据驱动排序信号可观测：`review_count_estimate`、`popularity_adjustment`、`brand_popularity_bonus`、`brand_signal`、`entity_quality_adjustment`、`entity_quality_signals`
+- [ ] `time_budget_source` 可观测：显式时长不被覆盖，未说明时长按单点/组合/半日/一日/商务/夜间场景推断
+- [ ] `review_summary` 可展示：卡片和地图弹窗使用用户可读口碑摘要，不暴露内部评分字段或模型术语
+- [ ] 模糊短句返回 `clarification_options`，同一 `session_id` 下 follow-up 能沿用上次位置和类型
 - [ ] 春熙/太古里火锅回归：优先完整正餐火锅门店，过滤麻辣烫/冒菜/甜品误分类与共享充电等附属设施，同品牌不连续占满榜单
 - [ ] 非火锅单点回归：茶馆过滤茶饮/棋牌，咖啡优先 coffee/cafe 名称，公园过滤绿地超市/商业广场/普通景点，中餐过滤酒店/会展，酒吧过滤健身/营养 club，超市+小吃路线同时覆盖两个明确类型
 - [ ] 组合意图回归：太古里逛街+咖啡返回商场+饮品，九眼桥喝酒+夜宵返回酒吧+小吃，出差午餐+咖啡返回中餐+饮品
@@ -55,6 +58,8 @@
 - [ ] 预选场景覆盖春熙半日、锦里武侯、九眼桥夜游、太古里咖啡、出差午餐
 - [ ] 前端错误监控接入（Sentry 等）
 - [ ] 移动端适配测试
+- [ ] 右侧结果列表可滚动，5 个以上推荐不被底部操作区或移动端导航遮挡
+- [ ] 地图 marker 和结果卡片有可发现的点击详情入口，路线变体能画出 polyline
 - [ ] 各浏览器兼容性测试
 
 ## 安全

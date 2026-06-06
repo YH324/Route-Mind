@@ -25,8 +25,8 @@ from interaction_intelligence import apply_context_to_constraints, poi_matcher
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CENTER_LNG = 104.06476
 DEFAULT_CENTER_LAT = 30.65705
-RANKING_MODEL_VERSION = "feature_ranker_v1.4"
-PLANNER_VERSION = "route_planner_v3.8"
+RANKING_MODEL_VERSION = "feature_ranker_v1.5"
+PLANNER_VERSION = "route_planner_v3.9"
 _REFERENCE_POIS_CACHE = None
 
 
@@ -446,7 +446,7 @@ random.seed(42)
 # ========== 用户意图解析 ==========
 
 GOAL_PATTERNS = {
-    "time_budget": r"(\d+)\s*小时|半日|一日|全天|半天",
+    "time_budget": r"(\d+(?:\.\d+)?)\s*(?:个)?小时|([一二三四五六七八九十两俩]+)\s*(?:个)?小时|半小时|半日|一日|一天|全天|半天",
     "mode_walk": r"步行|走路|散步|溜达",
     "mode_bike": r"骑车|骑行|自行车|电动车",
     "mode_drive": r"开车|自驾|驾车|打车",
@@ -1164,6 +1164,95 @@ def _get_category(real_type):
     return "其他"
 
 
+CN_NUM = {
+    "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+    "十一": 11, "十二": 12, "两": 2, "俩": 2, "廿": 20, "卅": 30,
+}
+
+
+def _parse_cn_number(s):
+    s = str(s or "").strip()
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        pass
+    if s in CN_NUM:
+        return CN_NUM[s]
+    if s.startswith("十") and len(s) > 1:
+        tail = CN_NUM.get(s[1:])
+        if tail is not None:
+            return 10 + tail
+    if "十" in s:
+        head, tail = s.split("十", 1)
+        head_num = CN_NUM.get(head, 1)
+        tail_num = CN_NUM.get(tail, 0) if tail else 0
+        return head_num * 10 + tail_num
+    return None
+
+
+def _format_budget_hours(hours):
+    try:
+        value = float(hours)
+    except (TypeError, ValueError):
+        return hours
+    if value.is_integer():
+        return int(value)
+    return round(value, 1)
+
+
+def _explicit_time_budget(goal_text, goal_lower):
+    time_match = re.search(GOAL_PATTERNS["time_budget"], goal_lower)
+    if not time_match:
+        return None, "inferred"
+    if "半小时" in goal_text:
+        return 0.5, "explicit"
+    num = time_match.group(1)
+    cn_num = time_match.group(2)
+    if num:
+        return _format_budget_hours(float(num)), "explicit"
+    parsed_cn = _parse_cn_number(cn_num)
+    if parsed_cn is not None:
+        return _format_budget_hours(parsed_cn), "explicit"
+    if "半日" in goal_text or "半天" in goal_text:
+        return 4, "explicit"
+    if "一日" in goal_text or "一天" in goal_text or "全天" in goal_text:
+        return 8, "explicit"
+    return None, "inferred"
+
+
+def _infer_time_budget_hours(goal_text, preferred, sequence):
+    """Infer a practical time budget when the user did not state one."""
+    text = goal_text or ""
+    if any(k in text for k in ("半日", "半天")):
+        return 4
+    if any(k in text for k in ("一日", "一天", "全天")):
+        return 8
+    if any(k in text for k in ("出差", "赶时间", "快速", "就近", "路过")):
+        return 1.5
+    if sequence:
+        if len(sequence) >= 3:
+            return 3.5
+        if any(t in sequence for t in ("酒吧", "KTV", "电影院", "按摩SPA")):
+            return 3
+        if any(t in sequence for t in ("商场", "景点", "公园")):
+            return 2.5
+        return 2
+    concrete = [t for t in preferred if t not in TYPE_CATEGORIES]
+    if len(concrete) >= 2:
+        return 2.5
+    if any(t in preferred for t in ("酒吧", "KTV", "电影院", "按摩SPA")):
+        return 2.5
+    if any(t in preferred for t in ("景点", "公园", "游乐园", "购物", "商场")):
+        return 2
+    if any(t in preferred for t in ("火锅", "烧烤", "中餐", "外国菜", "农家菜", "餐饮")):
+        return 1.5
+    if any(t in preferred for t in ("饮品", "甜品", "茶馆", "小吃", "超市", "便利店")):
+        return 1
+    return 3
+
+
 
 VARIANT_BONUS = {
     "efficient": {"景点": 0.6, "餐饮": 0.4, "休闲": 0.4, "购物": 0.0, "其他": 0.2},
@@ -1176,16 +1265,8 @@ def parse_goal(goal_text):
     """解析用户自然语言意图"""
     goal_lower = goal_text.lower()
     
-    # 时间预算
-    time_match = re.search(GOAL_PATTERNS["time_budget"], goal_lower)
-    if time_match:
-        num = time_match.group(1)
-        if num:
-            hours = int(num)
-        else:
-            hours = 4 if "半" in goal_text else 8
-    else:
-        hours = 4
+    # 时间预算：显式时间优先；未说明时按意图形态推断，避免所有请求都落到固定 4 小时。
+    hours, time_budget_source = _explicit_time_budget(goal_text, goal_lower)
 
     # 出行方式
     if re.search(GOAL_PATTERNS["mode_walk"], goal_lower):
@@ -1323,21 +1404,17 @@ def parse_goal(goal_text):
             if typ not in sequence:
                 sequence.append(typ)
 
-    # 起始时间解析（支持中文数字和阿拉伯数字）
-    CN_NUM = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
-              "十一": 11, "十二": 12, "两": 2, "俩": 2, "廿": 20, "卅": 30}
+    if hours is None:
+        hours = _infer_time_budget_hours(goal_text, preferred, sequence)
+        time_budget_source = "inferred"
 
+    # 起始时间解析（支持中文数字和阿拉伯数字）
     def _parse_hour(s):
         s = s.strip()
         if s.isdigit():
             return int(s)
-        if s in CN_NUM:
-            return CN_NUM[s]
-        # 尝试匹配 "十一"、"十二" 等
-        for k, v in sorted(CN_NUM.items(), key=lambda x: -len(x[0])):
-            if s == k:
-                return v
-        return None
+        parsed = _parse_cn_number(s)
+        return int(parsed) if parsed is not None else None
 
     start_time = "09:00"
     ampm_match = re.search(GOAL_PATTERNS["start_time_ampm"], goal_text)
@@ -1370,6 +1447,7 @@ def parse_goal(goal_text):
     return {
         "raw_goal": goal_text,
         "time_budget_hours": hours,
+        "time_budget_source": time_budget_source,
         "mode": mode,
         "preferred_tags": preferred,
         "must_visit": [],
@@ -1665,6 +1743,67 @@ def _build_recommendation_basis(score, features, reasons, arrival_time=None, ope
     }
 
 
+def _build_review_summary(poi, real_type, gt, basis=None):
+    """Create user-facing review notes from local aggregate signals."""
+    gt = gt or {}
+    basis = basis or {}
+    features = basis.get("features", {})
+    review_count = features.get("review_count_estimate")
+    rating = float(gt.get("overall", 0) or 0)
+    highlights = []
+    dim_labels = {"taste": "口味", "env": "环境", "service": "服务", "value": "性价比", "queue": "等位"}
+    dims = []
+    for key, label in dim_labels.items():
+        try:
+            value = float(gt.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            dims.append((value, label))
+    dims.sort(reverse=True)
+
+    if rating >= 4.5:
+        highlights.append("综合口碑突出")
+    elif rating >= 4.0:
+        highlights.append("评价稳定")
+    elif rating >= 3.5:
+        highlights.append("口碑表现中上")
+    if review_count:
+        try:
+            count = int(review_count)
+            if count >= 250:
+                highlights.append("热度较高")
+            elif count >= 120:
+                highlights.append("评价样本较充分")
+        except (TypeError, ValueError):
+            pass
+    for _, label in dims[:2]:
+        if label not in "".join(highlights):
+            highlights.append(f"{label}反馈较好")
+    for scene in gt.get("best_for", [])[:2]:
+        if isinstance(scene, str) and not any(ch in scene for ch in ("�", "Ã", "Â", "å", "æ", "é")):
+            highlights.append(f"适合{scene}")
+    if real_type in ("火锅", "烧烤", "中餐", "小吃", "外国菜"):
+        template = "多数反馈集中在口味、出餐和聚餐体验，适合作为本次用餐候选。"
+    elif real_type in ("饮品", "甜品", "茶馆"):
+        template = "多数反馈集中在环境、停留舒适度和聊天体验，适合放慢节奏。"
+    elif real_type in ("景点", "公园", "游乐园"):
+        template = "多数反馈集中在可逛性、拍照和亲友同行体验，适合串联行程。"
+    elif real_type in ("商场", "购物"):
+        template = "多数反馈集中在动线、品牌丰富度和顺路程度，适合和餐饮组合。"
+    else:
+        template = "多数反馈显示它和当前目标匹配度较高，可作为备选点位。"
+
+    return {
+        "rating_label": "口碑{}".format("突出" if rating >= 4.5 else "稳定" if rating >= 4.0 else "尚可"),
+        "review_count_estimate": review_count,
+        "highlights": list(dict.fromkeys(highlights))[:4],
+        "selected_comment": template,
+        "crowd_type": gt.get("crowd_type") if isinstance(gt.get("crowd_type"), str) and not any(ch in gt.get("crowd_type", "") for ch in ("�", "Ã", "Â", "å", "æ", "é")) else None,
+        "best_for": [x for x in gt.get("best_for", [])[:3] if isinstance(x, str) and not any(ch in x for ch in ("�", "Ã", "Â", "å", "æ", "é"))],
+    }
+
+
 def _model_metadata(intent_result, constraints, trace, semantic_poi_ids=None):
     return {
         "planner_version": PLANNER_VERSION,
@@ -1703,6 +1842,7 @@ def _model_metadata(intent_result, constraints, trace, semantic_poi_ids=None):
             "radius_m": constraints.get("radius"),
             "requested_radius_m": constraints.get("requested_radius"),
             "time_budget_hours": constraints.get("time_budget_hours"),
+            "time_budget_source": constraints.get("time_budget_source"),
             "start_time": constraints.get("start_time"),
             "preferred_tags": constraints.get("preferred_tags", []),
             "avoid_tags": constraints.get("avoid_tags", []),
@@ -2310,6 +2450,22 @@ def format_route_v3(route, constraints, gt_data, hours_map, network, variant_nam
             reasons.append("路线后处理阶段为满足明确偏好强制替换进入方案")
         open_at_arrival = is_open_at(poi["poi_id"], arr_time.strftime("%H:%M"), hours_map)
         category = _get_category(rt)
+        recommendation_basis = _build_recommendation_basis(
+            score,
+            features,
+            reasons,
+            arrival_time=arr_time.strftime("%H:%M"),
+            open_at_arrival=open_at_arrival,
+            distance_m=dist_m,
+            travel_time_min=time_min,
+            variant_name=variant_name,
+            semantic_boost=rank_context.get("semantic_boost", 0.0),
+            sequence_boost=rank_context.get("sequence_boost", 0.0),
+            distance_penalty=rank_context.get("distance_penalty", 0.0),
+            variant_bonus=rank_context.get("variant_bonus", 0.0),
+            start_selection_bonus=rank_context.get("start_selection_bonus", 0.0),
+            start_fallback=rank_context.get("start_fallback", False),
+        )
 
         step = {
             "order": i + 1,
@@ -2325,22 +2481,8 @@ def format_route_v3(route, constraints, gt_data, hours_map, network, variant_nam
             "stay_minutes": stay,
             "ground_truth": gt,
             "business_hours": hours_map.get(poi["poi_id"], {}),
-            "recommendation_basis": _build_recommendation_basis(
-                score,
-                features,
-                reasons,
-                arrival_time=arr_time.strftime("%H:%M"),
-                open_at_arrival=open_at_arrival,
-                distance_m=dist_m,
-                travel_time_min=time_min,
-                variant_name=variant_name,
-                semantic_boost=rank_context.get("semantic_boost", 0.0),
-                sequence_boost=rank_context.get("sequence_boost", 0.0),
-                distance_penalty=rank_context.get("distance_penalty", 0.0),
-                variant_bonus=rank_context.get("variant_bonus", 0.0),
-                start_selection_bonus=rank_context.get("start_selection_bonus", 0.0),
-                start_fallback=rank_context.get("start_fallback", False),
-            ),
+            "recommendation_basis": recommendation_basis,
+            "review_summary": _build_review_summary(poi, rt, gt, recommendation_basis),
         }
 
         # 从起点到第一个 POI
@@ -2377,6 +2519,11 @@ def format_route_v3(route, constraints, gt_data, hours_map, network, variant_nam
                             [prev_node["lat"], prev_node["lng"]],
                             [cur_node["lat"], cur_node["lng"]],
                         ]
+            if "polyline" not in step["move_from_prev"]:
+                step["move_from_prev"]["polyline"] = [
+                    [prev["latitude"], prev["longitude"]],
+                    [poi["latitude"], poi["longitude"]],
+                ]
 
         current_time = dep_time
         route_types_so_far.add(rt)
@@ -2858,6 +3005,15 @@ def build_plan_v3(goal, pois, gt_data, center_lng=DEFAULT_CENTER_LNG, center_lat
                     p, gt_data.get(p["poi_id"], {}), constraints, set(), None, type_index
                 )
             open_at_start = is_open_at(p["poi_id"], constraints.get("start_time", "09:00"), hours_map)
+            gt = gt_data.get(p["poi_id"], {})
+            recommendation_basis = _build_recommendation_basis(
+                score,
+                features,
+                reasons,
+                arrival_time=constraints.get("start_time"),
+                open_at_arrival=open_at_start,
+                special_bonus=special_bonus,
+            )
             recs.append({
                 "poi_id": p["poi_id"],
                 "name": p["name"],
@@ -2866,15 +3022,9 @@ def build_plan_v3(goal, pois, gt_data, center_lng=DEFAULT_CENTER_LNG, center_lat
                 "score": round(score, 2),
                 "location": {"lng": p["longitude"], "lat": p["latitude"]},
                 "business_hours": hours,
-                "ground_truth": gt_data.get(p["poi_id"], {}),
-                "recommendation_basis": _build_recommendation_basis(
-                    score,
-                    features,
-                    reasons,
-                    arrival_time=constraints.get("start_time"),
-                    open_at_arrival=open_at_start,
-                    special_bonus=special_bonus,
-                ),
+                "ground_truth": gt,
+                "recommendation_basis": recommendation_basis,
+                "review_summary": _build_review_summary(p, rt, gt, recommendation_basis),
             })
             if single_poi_fallback:
                 recs[-1]["recommendation_basis"]["features"]["single_poi_fallback"] = True
@@ -3002,6 +3152,14 @@ def _build_sequence_recommendation_variant(candidates, gt_data, constraints, hou
         if scored:
             score, p, rt, cat, features, reasons, sequence_boost = scored[0]
             used.add(p["poi_id"])
+            recommendation_basis = _build_recommendation_basis(
+                score,
+                features,
+                reasons,
+                arrival_time=constraints.get("start_time", "09:00"),
+                open_at_arrival=True,
+                sequence_boost=sequence_boost,
+            )
             recs.append({
                 "poi_id": p["poi_id"],
                 "name": p["name"],
@@ -3011,27 +3169,61 @@ def _build_sequence_recommendation_variant(candidates, gt_data, constraints, hou
                 "location": {"lng": p["longitude"], "lat": p["latitude"]},
                 "business_hours": hours_map.get(p["poi_id"], {}),
                 "ground_truth": gt_data.get(p["poi_id"], {}),
-                "recommendation_basis": _build_recommendation_basis(
-                    score,
-                    features,
-                    reasons,
-                    arrival_time=constraints.get("start_time", "09:00"),
-                    open_at_arrival=True,
-                    sequence_boost=sequence_boost,
-                ),
+                "recommendation_basis": recommendation_basis,
+                "review_summary": _build_review_summary(p, rt, gt_data.get(p["poi_id"], {}), recommendation_basis),
             })
     if not recs:
         return None
+    route_steps = []
+    mode = constraints.get("mode", "walk")
+    current_time = datetime.strptime(constraints.get("start_time", "09:00"), "%H:%M")
+    prev_lng, prev_lat = center_lng, center_lat
+    total_move = 0.0
+    total_move_time = 0.0
+    for i, rec in enumerate(recs):
+        loc = rec["location"]
+        dist_m = _straight_distance_m(prev_lng, prev_lat, loc["lng"], loc["lat"])
+        time_min = _travel_time_from_distance(dist_m, mode)
+        stay = _stay_minutes(rec["type"], constraints, variant_name="relaxed")
+        arr_time = current_time + timedelta(minutes=time_min)
+        dep_time = arr_time + timedelta(minutes=stay)
+        step = dict(rec)
+        step.update({
+            "order": i + 1,
+            "arrival_time": arr_time.strftime("%H:%M"),
+            "departure_time": dep_time.strftime("%H:%M"),
+            "stay_minutes": stay,
+        })
+        move = {
+            "distance_m": round(dist_m, 1),
+            "time_min": round(time_min, 1),
+            "travel_mode": mode,
+            "polyline": [[prev_lat, prev_lng], [loc["lat"], loc["lng"]]],
+        }
+        if i == 0:
+            step["move_from_start"] = {
+                "from_location": {"lng": center_lng, "lat": center_lat},
+                "to_location": {"lng": loc["lng"], "lat": loc["lat"]},
+                **move,
+            }
+        else:
+            step["move_from_prev"] = move
+        route_steps.append(step)
+        total_move += dist_m
+        total_move_time += time_min
+        current_time = dep_time
+        prev_lng, prev_lat = loc["lng"], loc["lat"]
+    total_time = (current_time - datetime.strptime(constraints.get("start_time", "09:00"), "%H:%M")).total_seconds() / 60
     return {
         "variant_id": "sequence_fallback",
-        "name": "候选组合",
-        "description": "先按您的顺序给出可选地点，方便继续筛选",
+        "name": "顺序候选路线",
+        "description": "按您的访问顺序生成的可执行候选路线",
         "poi_count": len(recs),
-        "total_time_minutes": 0,
-        "total_move_time": 0,
-        "total_move_distance": 0,
-        "time_utilization": 0,
+        "total_time_minutes": round(total_time),
+        "total_move_time": round(total_move_time, 1),
+        "total_move_distance": round(total_move, 1),
+        "time_utilization": round(total_time / max(constraints["time_budget_hours"] * 60, 1), 2),
         "start_location": {"lng": center_lng, "lat": center_lat},
-        "route": [],
+        "route": route_steps,
         "recommendations": recs,
     }

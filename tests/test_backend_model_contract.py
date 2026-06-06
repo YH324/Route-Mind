@@ -48,6 +48,22 @@ class TestBackendModelContract(unittest.TestCase):
         self.assertEqual(response["error_code"], "UNSUPPORTED_SERVICE_AREA")
         self.assertIn("bounds", response["service_area"])
 
+    def test_ambiguous_short_goal_returns_clarification_options(self):
+        response = run_agent(
+            {
+                "goal": "随便安排一下",
+                "city": "chengdu",
+                "radius": 3000,
+                "user_mode": "tourist",
+            },
+            request_id="clarification-contract-test",
+        )
+        self.assertTrue(response["ok"], response)
+        self.assertFalse(response["result"]["variants"])
+        self.assertEqual(response["result"]["constraints"].get("intent_type"), "clarification")
+        self.assertTrue(response.get("clarification_options"), response)
+        self.assertIn("需要", response.get("notice", ""))
+
     def test_local_landmark_mentions_recenter_request(self):
         response = run_agent(
             {
@@ -220,7 +236,9 @@ class TestBackendModelContract(unittest.TestCase):
         )
         self.assertTrue(response["ok"], response)
         model = response["result"]["model"]
-        self.assertEqual(model["ranking_model"], "feature_ranker_v1.4")
+        self.assertEqual(model["ranking_model"], "feature_ranker_v1.5")
+        self.assertEqual(response["result"]["constraints"].get("time_budget_hours"), 1.5)
+        self.assertEqual(response["result"]["constraints"].get("time_budget_source"), "inferred")
         self.assertIn("data_driven_brand_recognition", model["feature_sources"])
         self.assertIn("entity_fit_quality", model["feature_sources"])
         self.assertIn("llm_candidate_review", model["candidate_pipeline"])
@@ -234,6 +252,8 @@ class TestBackendModelContract(unittest.TestCase):
         brands = [rec["recommendation_basis"]["features"].get("matched_brand") or rec["name"] for rec in recs[:5]]
         self.assertEqual(len(brands), len(set(brands)), brands)
         first_features = recs[0]["recommendation_basis"]["features"]
+        self.assertIn("review_summary", recs[0])
+        self.assertTrue(recs[0]["review_summary"].get("selected_comment"))
         self.assertIn("brand_popularity_bonus", first_features)
         self.assertIn("brand_signal", first_features)
         self.assertIn("entity_quality_adjustment", first_features)
@@ -295,10 +315,16 @@ class TestBackendModelContract(unittest.TestCase):
         result = response["result"]
         self.assertEqual(result["center"]["center_key"], "taikooli")
         self.assertEqual(result["constraints"].get("sequence"), ["商场", "饮品"])
+        self.assertEqual(result["constraints"].get("time_budget_hours"), 2.5)
         items = result["variants"][0].get("route") or result["variants"][0].get("recommendations", [])
         types = {item["type"] for item in items}
         self.assertIn("饮品", types, items)
         self.assertIn("商场", types, items)
+        route = result["variants"][0].get("route", [])
+        self.assertTrue(route, result["variants"][0])
+        self.assertIn("polyline", route[0].get("move_from_start", {}))
+        if len(route) > 1:
+            self.assertIn("polyline", route[1].get("move_from_prev", {}))
 
     def test_coffee_query_prefers_coffee_named_places(self):
         response = run_agent(
@@ -371,6 +397,8 @@ class TestBackendModelContract(unittest.TestCase):
         self.assertTrue(response["ok"], response)
         result = response["result"]
         self.assertEqual(result["constraints"].get("sequence"), ["中餐", "饮品"])
+        self.assertEqual(result["constraints"].get("time_budget_hours"), 1)
+        self.assertEqual(result["constraints"].get("time_budget_source"), "explicit")
         variant = result["variants"][0]
         items = variant.get("route") or variant.get("recommendations") or []
         types = {step["type"] for step in items}

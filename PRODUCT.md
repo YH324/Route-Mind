@@ -9,7 +9,7 @@
 - **语义检索增强**：复杂路线在配置 `GLM_API_KEY` 后可用本地 POI 向量 + GLM 查询向量做候选增强，未配置或网络异常时自动跳过
 - **下一代交互理解**：支持 `session_id/user_id` 记忆、多说话人对话聚合、清淡/约会/亲子/商务等语义需求匹配
 - **路网真实路径**：Dijkstra 最短路径，路线折线贴合街道（非直线）
-- **营业时间过滤**：自动排除已打烊的 POI，根据偏好类型自动调整起始时间
+- **营业时间与时长治理**：自动排除已打烊的 POI，根据偏好类型自动调整起始时间；未显式说明时长时按单点、组合、半日/一日、商务/夜间场景推断合理预算
 - **类型多样性约束**：餐饮≤2、景点≤2、同类型不重复，避免"火锅→茶馆→火锅"
 - **服务范围明确**：当前只支持成都武侯区、锦江区本地数据；外地城市或未覆盖区县会在入口公告和 API 响应中明确提示。
 
@@ -92,7 +92,7 @@ web_app.py (ThreadingHTTPServer)
             "business_hours": {"open_time": "10:30", "close_time": "02:00"},
             "location": {"lat": 30.65, "lng": 104.08},
             "recommendation_basis": {
-              "model": "feature_ranker_v1.4",
+              "model": "feature_ranker_v1.5",
               "score": 25.0,
               "top_reasons": [
                 "质量评分 4.6，游客 对 火锅 权重 1.30",
@@ -121,8 +121,8 @@ web_app.py (ThreadingHTTPServer)
       }
     ],
     "model": {
-      "planner_version": "route_planner_v3.8",
-      "ranking_model": "feature_ranker_v1.4",
+      "planner_version": "route_planner_v3.9",
+      "ranking_model": "feature_ranker_v1.5",
       "strategy": "feature-weighted constraint planner",
       "candidate_pipeline": {
         "raw_poi_count": 47045,
@@ -280,13 +280,15 @@ python _test_interaction.py
 
 ### 推荐依据与质量治理
 
-- 每个 POI 返回 `recommendation_basis`，解释质量分、类型权重、评价热度估计、偏好/语义命中、营业状态、移动成本、路网可达性、类型一致性、数据驱动品牌识别和门店实体可信度。
+- 每个 POI 返回 `recommendation_basis`，解释质量分、类型权重、评价热度估计、偏好/语义命中、营业状态、移动成本、路网可达性、类型一致性、数据驱动品牌识别和门店实体可信度；同时返回 `review_summary`，把本地评分/热度/场景信号转为前端可展示的精选口碑摘要。
 - 每次规划返回 `result.model.candidate_pipeline`，记录空间过滤、类型修正、低价值名称过滤、类型过滤、候选池截断、语义检索命中和 LLM 候选评审状态。
 - 低价值 POI 治理覆盖停业/装修、入口/门岗、停车/快递/充电设施、民宿房源、普通销售经营点；火锅推荐会降级麻辣烫/冒菜/甜品误分类和共享充电等附属设施，优先完整正餐火锅门店，并按候选池/全量 POI 中的品牌根、分店数、核心商圈店和正餐实体信号排序。
-- `feature_ranker_v1.4` 增加类型评论画像驱动的 `review_count_estimate` 与 `popularity_adjustment`，同时把公园、茶馆、咖啡、中餐、商场、超市、酒吧/小酒馆的实体适配纳入 `entity_quality_signals`，避免仅按文本相似或单一评分推荐误分类 POI。
+- `feature_ranker_v1.5` 增加类型评论画像驱动的 `review_count_estimate` 与 `popularity_adjustment`，同时把公园、茶馆、咖啡、中餐、商场、超市、酒吧/小酒馆的实体适配纳入 `entity_quality_signals`，避免仅按文本相似或单一评分推荐误分类 POI。
 - 大模型只参与“已存在候选”的评审重排：系统向 LLM 提供候选 POI ID、名称、类型、距离和排序特征，LLM 返回 POI ID 级加分与理由；任何不存在的 POI ID 都会被丢弃，网络或 API 异常时本地排序继续生效。
 - 单点“逛街/购物”优先真实商场本体；完整路线不再用普通购物或 `其他` 类型凑点。
-- “逛街+咖啡”“喝酒+夜宵”“午餐+咖啡”“超市+小吃”等组合意图会生成严格 `sequence`，具体类型顺序不再被同大类候选替代。严格步行/时间约束下无法构成路线时，返回“候选组合”供用户继续筛选。
+- “逛街+咖啡”“喝酒+夜宵”“午餐+咖啡”“超市+小吃”等组合意图会生成严格 `sequence`，具体类型顺序不再被同大类候选替代。严格步行/时间约束下无法构成主路线时，返回带时间轴、移动距离和 `polyline` 的“顺序候选路线”，前端仍能绘制路线。
+- `time_budget_source` 标记时长来自用户显式输入还是系统推断；“春熙路附近想吃火锅”会按单点用餐估算为短时段，“太古里逛街喝咖啡”会按两点组合估算为约 2.5 小时，“半日/一日”仍分别保留 4/8 小时。
+- 短句模糊意图会进入澄清门控：服务返回 `clarification_options`，前端展示可点击选项；同一 `session_id` 下支持“那附近换成茶馆”“还有别的吗”等多轮承接。
 - 路网起点候选过严时，会降级为直线距离起点选择，并在 `recommendation_basis.features.start_fallback` 中标记。
 
 ## 7. 部署指南

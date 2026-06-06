@@ -169,6 +169,36 @@ def extract_budget(text):
     return int(match.group(1))
 
 
+FOLLOW_UP_TERMS = ("那附近", "刚才", "上次", "附近还有", "还有", "换成", "改成", "换一个", "再来", "再加", "顺便", "别的")
+CENTER_FOLLOW_UP_TERMS = ("那附近", "刚才", "上次", "附近还有", "还有", "换成", "改成", "换一个", "再来", "再加", "别的")
+AMBIGUOUS_TERMS = ("随便", "都行", "安排一下", "推荐一下", "去哪", "怎么玩", "附近有什么", "不知道", "给个方案")
+
+
+def _is_follow_up(text):
+    return any(k in text for k in FOLLOW_UP_TERMS)
+
+
+def _uses_previous_center(text):
+    return any(k in text for k in CENTER_FOLLOW_UP_TERMS)
+
+
+def _is_ambiguous_goal(text, has_type_signal, has_location_signal, has_memory):
+    clean = re.sub(r"\s+", "", text or "")
+    if has_type_signal or has_location_signal:
+        return False
+    if has_memory and _is_follow_up(clean):
+        return False
+    return len(clean) <= 12 and any(k in clean for k in AMBIGUOUS_TERMS)
+
+
+def _clarification_options(normalized):
+    return [
+        {"label": "找餐厅", "goal": "春熙路附近找一家适合现在去的餐厅"},
+        {"label": "逛景点", "goal": "武侯祠附近看景点，安排两小时"},
+        {"label": "喝咖啡", "goal": "太古里附近喝咖啡，顺便逛街"},
+    ]
+
+
 class NeedInferer:
     def infer(self, text, profile=None):
         profile = profile or {}
@@ -552,11 +582,20 @@ class InteractionManager:
             goal = tracker.combined_goal()
 
         memory_applied = []
-        if any(k in goal for k in ("那附近", "刚才", "上次", "附近还有", "还有")) and session.get("center"):
+        is_follow_up = _is_follow_up(goal)
+        goal_location = extract_location(goal)
+        if _uses_previous_center(goal) and session.get("center") and not goal_location:
             normalized["center_lng"] = session["center"]["lng"]
             normalized["center_lat"] = session["center"]["lat"]
+            if session["center"].get("name"):
+                normalized["center_name"] = session["center"]["name"]
+            if session["center"].get("center_key"):
+                normalized["center_key"] = session["center"]["center_key"]
             memory_applied.append("last_center")
-        if any(k in goal for k in ("像上次", "照上次", "类似上次")) and session.get("mentioned_types"):
+        if (
+            any(k in goal for k in ("像上次", "照上次", "类似上次", "还有", "附近还有", "别的", "换一个"))
+            and session.get("mentioned_types")
+        ):
             memory_applied.append("mentioned_types")
 
         combined_text = " ".join([goal] + [m.get("text", "") for m in tracker.messages])
@@ -569,10 +608,11 @@ class InteractionManager:
         if session.get("mentioned_types") and "mentioned_types" in memory_applied:
             type_hints.extend(session["mentioned_types"])
 
-        loc = tracker.slots.get("location", {}).get("value")
+        loc = tracker.slots.get("location", {}).get("value") or goal_location
         if loc:
             normalized["center_lng"] = loc["lng"]
             normalized["center_lat"] = loc["lat"]
+            normalized["center_name"] = loc.get("name", normalized.get("center_name"))
             memory_applied.append("dialogue_location")
 
         sequence = tracker.slots.get("sequence", {}).get("value")
@@ -583,11 +623,15 @@ class InteractionManager:
             profile["dietary"] = _unique(profile.get("dietary", []) + dietary)
 
         clarification = None
+        clarification_options = []
+        needs_clarification = False
         conflicts = list(tracker.conflicts)
         intent_hint = None
         if sequence and len(sequence) >= 2:
             intent_hint = "simple_route"
         elif tracker.slots.get("food") and not tracker.slots.get("activity"):
+            intent_hint = "single_poi"
+        elif is_follow_up and type_hints and not sequence:
             intent_hint = "single_poi"
         if sequence and tracker.slots.get("food"):
             foods = [t for t in tracker.slots["food"]["value"] if TYPE_TO_CATEGORY.get(t) == "餐饮"]
@@ -602,6 +646,16 @@ class InteractionManager:
                     "reason": "火锅与不吃辣存在口味冲突，已转为清淡/不辣锅型偏好",
                 })
                 clarification = "有人想吃火锅，也有人不吃辣；已优先匹配番茄锅、菌汤锅、潮汕牛肉火锅等清淡方案。"
+        has_type_signal = bool(type_hints or sequence or tracker.slots.get("food") or tracker.slots.get("activity") or extract_types(goal))
+        has_location_signal = bool(loc or goal_location)
+        if _is_ambiguous_goal(goal, has_type_signal, has_location_signal, bool(session.get("center") or session.get("mentioned_types"))):
+            needs_clarification = True
+            clarification = "我还需要一个方向：您更想找餐饮、景点/公园、咖啡茶馆，还是夜间活动？"
+            clarification_options = _clarification_options(normalized)
+        elif is_follow_up and session.get("center") and not has_type_signal and not session.get("mentioned_types"):
+            needs_clarification = True
+            clarification = "我已沿用上一次的位置，但还需要知道这次想找餐饮、景点、咖啡茶馆还是夜间活动。"
+            clarification_options = _clarification_options(normalized)
 
         return {
             "session_id": session_id,
@@ -615,6 +669,8 @@ class InteractionManager:
             "dialogue_state": tracker.to_dict() if tracker.messages else None,
             "conflicts": conflicts,
             "clarification": clarification,
+            "needs_clarification": needs_clarification,
+            "clarification_options": clarification_options,
             "memory_applied": _unique(memory_applied),
         }
 
@@ -625,7 +681,12 @@ class InteractionManager:
         first = variants[0] if variants else {}
         items = first.get("recommendations") or first.get("route") or []
         top_ids = [item.get("poi_id") for item in items[:5] if item.get("poi_id")]
-        center = {"lng": normalized["center_lng"], "lat": normalized["center_lat"]}
+        center = {
+            "lng": normalized["center_lng"],
+            "lat": normalized["center_lat"],
+            "name": normalized.get("center_name"),
+            "center_key": normalized.get("center_key"),
+        }
 
         session["queries"].append({
             "goal": normalized["goal"],
@@ -714,6 +775,8 @@ def apply_context_to_constraints(constraints, context):
         "user_needs": context.get("user_needs") or {},
         "conflicts": context.get("conflicts", []),
         "clarification": context.get("clarification"),
+        "needs_clarification": context.get("needs_clarification", False),
+        "clarification_options": context.get("clarification_options", []),
         "dialogue_state": context.get("dialogue_state"),
     }
     return constraints

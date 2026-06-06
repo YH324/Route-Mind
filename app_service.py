@@ -190,6 +190,56 @@ def _pois_from_api_response(poi_resp):
     return pois
 
 
+def _clarification_response(request_id, normalized, interaction_context, t0):
+    result = {
+        "user_goal": normalized["goal"],
+        "constraints": {
+            "raw_goal": normalized["goal"],
+            "intent_type": "clarification",
+            "time_budget_hours": None,
+            "time_budget_source": "pending",
+            "preferred_tags": [],
+            "sequence": [],
+            "interaction": {
+                "session_id": interaction_context.get("session_id"),
+                "user_id": interaction_context.get("user_id"),
+                "effective_goal": interaction_context.get("effective_goal"),
+                "memory_applied": interaction_context.get("memory_applied", []),
+                "user_needs": interaction_context.get("user_needs") or {},
+                "conflicts": interaction_context.get("conflicts", []),
+                "clarification": interaction_context.get("clarification"),
+                "needs_clarification": True,
+                "clarification_options": interaction_context.get("clarification_options", []),
+            },
+        },
+        "center": {
+            "lng": normalized["center_lng"],
+            "lat": normalized["center_lat"],
+            "radius_m": normalized["radius"],
+            "name": normalized.get("center_name"),
+            "center_key": normalized.get("center_key"),
+            "requested_city": normalized.get("requested_city"),
+        },
+        "service_area": SERVICE_AREA,
+        "model": {
+            "planner_version": "clarification_gate",
+            "strategy": "interactive_intent_completion",
+        },
+        "variants": [],
+    }
+    elapsed = round((time.time() - t0) * 1000)
+    return {
+        "ok": True,
+        "request_id": request_id,
+        "result": result,
+        "interaction": result["constraints"]["interaction"],
+        "persistence": interaction_manager.memory.persistence_status(),
+        "notice": interaction_context.get("clarification"),
+        "clarification_options": interaction_context.get("clarification_options", []),
+        "performance": {"load_ms": 0, "plan_ms": 0, "total_ms": elapsed},
+    }
+
+
 def run_agent(payload, request_id=None):
     """
     主入口：接收前端请求，返回路线规划结果
@@ -232,6 +282,8 @@ def run_agent(payload, request_id=None):
         repository.assert_ready()
         interaction_manager.apply_feedback(payload)
         interaction_context = interaction_manager.prepare(payload, normalized)
+        if interaction_context.get("needs_clarification"):
+            return _clarification_response(request_id, normalized, interaction_context, t0)
         effective_goal = interaction_context.get("effective_goal") or goal
         center_lat = normalized["center_lat"]
         center_lng = normalized["center_lng"]
@@ -287,6 +339,7 @@ def run_agent(payload, request_id=None):
                 "persistence": interaction_manager.memory.persistence_status(),
                 "performance": {"load_ms": round(t_load), "plan_ms": round(t_plan), "total_ms": round(t_load + t_plan)},
                 "notice": notice,
+                "clarification_options": interaction_context.get("clarification_options", []),
             }
 
         return {
@@ -296,6 +349,7 @@ def run_agent(payload, request_id=None):
             "interaction": result.get("constraints", {}).get("interaction", {}),
             "persistence": interaction_manager.memory.persistence_status(),
             "notice": interaction_context.get("clarification"),
+            "clarification_options": interaction_context.get("clarification_options", []),
             "performance": {
                 "load_ms": round(t_load),
                 "plan_ms": round(t_plan),

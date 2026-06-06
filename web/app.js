@@ -65,7 +65,7 @@ const VARIANT_LABELS = {
   relaxed: { zh: "休闲慢游", en: "Relaxed" },
   food_first: { zh: "美食探店", en: "Food-first" },
   single_poi: { zh: "精选推荐", en: "Curated" },
-  sequence_fallback: { zh: "候选组合", en: "Candidate Set" },
+  sequence_fallback: { zh: "顺序候选路线", en: "Candidate Route" },
 };
 
 const VARIANT_COLORS = {
@@ -116,6 +116,8 @@ const I18N = {
     totalTime: "总时间", moveTime: "移动", poiCount: "POI", singlePoi: "推荐", utilization: "利用率",
     score: "评分", open: "营业", stay: "停留", startTo: "起点", why: "为什么推荐", whyTitle: "推荐理由",
     copyName: "复制店名", focusMap: "地图定位", replace: "替换", skip: "跳过",
+    detailsHint: "点击卡片或地图点查看详情", reviewNote: "精选口碑", estReviews: "约 {n} 条评价热度",
+    askFollowup: "继续补充", budgetAuto: "智能估算",
     type: "类型", budget: "预算", mode: "方式", start: "起始", radius: "半径",
     intent: "交互意图", memory: "记忆", needs: "需求", conflicts: "冲突", notice: "提示",
     themeClear: "清爽", themeWarm: "暖橙", themeNight: "夜游",
@@ -156,6 +158,8 @@ const I18N = {
     totalTime: "Total", moveTime: "Move", poiCount: "POIs", singlePoi: "Recommendations", utilization: "Use",
     score: "Score", open: "Open", stay: "Stay", startTo: "Start", why: "Why recommended", whyTitle: "Why this route",
     copyName: "Copy", focusMap: "Focus", replace: "Replace", skip: "Skip",
+    detailsHint: "Tap cards or map markers for details", reviewNote: "Review note", estReviews: "~{n} review signals",
+    askFollowup: "Continue", budgetAuto: "auto",
     type: "Type", budget: "Budget", mode: "Mode", start: "Start", radius: "Radius",
     intent: "Intent", memory: "Memory", needs: "Needs", conflicts: "Conflicts", notice: "Notice",
     themeClear: "Clear", themeWarm: "Warm", themeNight: "Night",
@@ -292,8 +296,7 @@ function renderMap(variant) {
     bounds.push([loc.lat, loc.lng]);
     const m = L.circleMarker([loc.lat, loc.lng], { radius: 11, fillColor: getColor(step.type), color: "#fff", weight: 2, opacity: 1, fillOpacity: 0.92 }).addTo(map);
     m.bindTooltip(`${i+1}. ${step.name}`, { direction: "top", offset: [0, -10] });
-    const quality = qualityText(step);
-    m.bindPopup(`<strong>${i+1}. ${escapeHtml(step.name)}</strong><br>${escapeHtml(t("type"))}: ${escapeHtml(step.type||"-")}<br>${escapeHtml(t("start"))}: ${escapeHtml(step.arrival_time||"-")}${quality ? `<br>${escapeHtml(quality)}` : ""}`);
+    m.bindPopup(markerPopupHtml(step, i));
     poiLayers.push(m);
     let coords = [];
     if (i === 0 && step.move_from_start) {
@@ -305,13 +308,14 @@ function renderMap(variant) {
     if (coords.length >= 2) routeLayers.push(L.polyline(coords, { color, weight: 5, opacity: 0.78, dashArray: i===0 ? "8,7" : null }).addTo(map));
   });
   const recs = variant.recommendations || [];
+  const routeIds = new Set(route.map(step => String(step.poi_id || step.name || "")));
   recs.forEach((rec, i) => {
+    if (routeIds.has(String(rec.poi_id || rec.name || ""))) return;
     const loc = rec.location; if (!loc) return;
     bounds.push([loc.lat, loc.lng]);
     const m = L.circleMarker([loc.lat, loc.lng], { radius: 11, fillColor: getColor(rec.type), color: "#fff", weight: 2, opacity: 1, fillOpacity: 0.92 }).addTo(map);
     m.bindTooltip(`${i+1}. ${rec.name}`, { direction: "top", offset: [0, -10] });
-    const quality = qualityText(rec);
-    m.bindPopup(`<strong>${i+1}. ${escapeHtml(rec.name)}</strong><br>${escapeHtml(t("type"))}: ${escapeHtml(rec.type||"-")}${quality ? `<br>${escapeHtml(quality)}` : ""}`);
+    m.bindPopup(markerPopupHtml(rec, i));
     poiLayers.push(m);
   });
   if (bounds.length > 0) { currentBounds = L.latLngBounds(bounds); map.fitBounds(currentBounds, { padding: [42,42], maxZoom: 16 }); }
@@ -358,6 +362,29 @@ function qualityText(item) {
 function compactOpenText(item) {
   const text = businessHoursText(item.business_hours);
   return text && text !== "-" ? userPhrase(`营业 ${text}`, `Open ${text}`) : "";
+}
+
+function formatReviewCount(n) {
+  const count = Number(n || 0);
+  if (!count) return "";
+  return t("estReviews").replace("{n}", count);
+}
+
+function reviewSummaryHtml(item, compact = false) {
+  const review = item.review_summary || {};
+  const highlights = Array.isArray(review.highlights) ? review.highlights.filter(Boolean).slice(0, compact ? 2 : 4) : [];
+  const count = formatReviewCount(review.review_count_estimate);
+  const note = review.selected_comment;
+  if (!highlights.length && !count && !note) return "";
+  return `<div class="review-summary ${compact ? "compact" : ""}"><strong>${t("reviewNote")}</strong>${count ? `<span>${escapeHtml(count)}</span>` : ""}${highlights.length ? `<div class="review-tags">${highlights.map(x => `<em>${escapeHtml(x)}</em>`).join("")}</div>` : ""}${note && !compact ? `<p>${escapeHtml(note)}</p>` : ""}</div>`;
+}
+
+function markerPopupHtml(item, index) {
+  const quality = qualityText(item);
+  const reasons = reasonItems(item, currentVariants[activeVariantIndex] || {}).slice(0, 3);
+  const arrival = item.arrival_time ? `<br>${escapeHtml(t("start"))}: ${escapeHtml(item.arrival_time || "-")}` : "";
+  const review = reviewSummaryHtml(item, true);
+  return `<div class="map-popup"><strong>${index+1}. ${escapeHtml(item.name)}</strong><br>${escapeHtml(t("type"))}: ${escapeHtml(item.type||"-")}${arrival}${quality ? `<br>${escapeHtml(quality)}` : ""}${reasons.length ? `<div class="popup-reasons">${reasons.map(r => `<span>${escapeHtml(r)}</span>`).join("")}</div>` : ""}${review}</div>`;
 }
 
 function reasonItems(item, variant) {
@@ -409,6 +436,11 @@ function renderReasonChips(item, variant) {
   return reasonItems(item, variant).map(r => `<span>${escapeHtml(r)}</span>`).join("");
 }
 
+function renderClarificationActions(options = []) {
+  if (!options.length) return "";
+  return `<div class="quick-error-actions">${options.map(o => `<button data-goal="${escapeHtml(o.goal || o.label || "")}">${escapeHtml(o.label || t("askFollowup"))}</button>`).join("")}</div>`;
+}
+
 function renderRouteStep(step, i, variant) {
   const move = step.move_from_prev;
   const moveHtml = move ? `<div class="move">&rarr; ${formatDistance(move.distance_m)} / ${formatTime(move.time_min)}</div>` : "";
@@ -418,7 +450,8 @@ function renderRouteStep(step, i, variant) {
   const color = getColor(step.type);
   const quality = qualityText(step);
   const reasons = renderReasonChips(step, variant);
-  return `${startMoveHtml}<article class="stop" data-poi-id="${escapeHtml(step.poi_id)}"><div class="stop-index" style="--color:${color}">${emoji}</div><div class="stop-card"><div class="stop-top"><div class="stop-name">${escapeHtml(step.name)}</div>${quality ? `<div class="score">${escapeHtml(quality)}</div>` : ""}</div><div class="stop-tags"><span>${escapeHtml(step.type || "-")}</span><span>${escapeHtml(step.arrival_time || "-")} - ${escapeHtml(step.departure_time || "-")}</span></div>${reasons ? `<div class="reason-list">${reasons}</div>` : ""}${actionButtons(step)}</div></article>${moveHtml}`;
+  const review = reviewSummaryHtml(step);
+  return `${startMoveHtml}<article class="stop" data-poi-id="${escapeHtml(step.poi_id)}" title="${escapeHtml(t("detailsHint"))}"><div class="stop-index" style="--color:${color}">${emoji}</div><div class="stop-card"><div class="stop-top"><div class="stop-name">${escapeHtml(step.name)}</div>${quality ? `<div class="score">${escapeHtml(quality)}</div>` : ""}</div><div class="stop-tags"><span>${escapeHtml(step.type || "-")}</span><span>${escapeHtml(step.arrival_time || "-")} - ${escapeHtml(step.departure_time || "-")}</span></div>${reasons ? `<div class="reason-list">${reasons}</div>` : ""}${review}${actionButtons(step)}</div></article>${moveHtml}`;
 }
 
 function renderRecommendation(rec, i, variant) {
@@ -426,7 +459,8 @@ function renderRecommendation(rec, i, variant) {
   const color = getColor(rec.type);
   const quality = qualityText(rec);
   const reasons = renderReasonChips(rec, variant);
-  return `<article class="stop" data-poi-id="${escapeHtml(rec.poi_id)}"><div class="stop-index" style="--color:${color}">${emoji}</div><div class="stop-card"><div class="stop-top"><div class="stop-name">${escapeHtml(rec.name)}</div>${quality ? `<div class="score">${escapeHtml(quality)}</div>` : ""}</div><div class="stop-tags"><span>${escapeHtml(rec.type || "-")}</span></div>${reasons ? `<div class="reason-list">${reasons}</div>` : ""}${actionButtons(rec)}</div></article>`;
+  const review = reviewSummaryHtml(rec);
+  return `<article class="stop" data-poi-id="${escapeHtml(rec.poi_id)}" title="${escapeHtml(t("detailsHint"))}"><div class="stop-index" style="--color:${color}">${emoji}</div><div class="stop-card"><div class="stop-top"><div class="stop-name">${escapeHtml(rec.name)}</div>${quality ? `<div class="score">${escapeHtml(quality)}</div>` : ""}</div><div class="stop-tags"><span>${escapeHtml(rec.type || "-")}</span></div>${reasons ? `<div class="reason-list">${reasons}</div>` : ""}${review}${actionButtons(rec)}</div></article>`;
 }
 
 function renderVariantPanel(variant, index) {
@@ -437,7 +471,7 @@ function renderVariantPanel(variant, index) {
   const empty = `<div class="empty-card">${t("noResult")}</div>`;
   const diffOnly = diffOnlyToggle.checked && currentVariants.length > 1;
   const diff = diffText(variant, currentVariants);
-  return `<div class="variant-panel ${index===activeVariantIndex?"active":""}" data-index="${index}"><div class="variant-header"><h3>${escapeHtml(variantName(variant))}</h3><p class="variant-desc">${escapeHtml(variant.description || "")}</p>${diffOnly && diff ? `<span class="diff-badge">${escapeHtml(diff)}</span>` : ""}<div class="variant-stats"><div class="stat-tile"><span>${t("poiCount")}</span><strong>${stats.poi}</strong></div><div class="stat-tile"><span>${t("totalTime")}</span><strong>${stats.isRoute ? formatTime(stats.total) : "-"}</strong></div><div class="stat-tile"><span>${t("moveTime")}</span><strong>${stats.isRoute ? `${formatDistance(stats.distance)} / ${formatTime(stats.move)}` : "-"}</strong></div><div class="stat-tile"><span>${t("utilization")}</span><strong>${stats.isRoute ? `${Math.round(stats.utilization*100)}%` : "-"}</strong></div></div></div><div class="timeline">${steps || empty}</div></div>`;
+  return `<div class="variant-panel ${index===activeVariantIndex?"active":""}" data-index="${index}"><div class="variant-header"><h3>${escapeHtml(variantName(variant))}</h3><p class="variant-desc">${escapeHtml(variant.description || "")}</p>${diffOnly && diff ? `<span class="diff-badge">${escapeHtml(diff)}</span>` : ""}<div class="variant-stats"><div class="stat-tile"><span>${t("poiCount")}</span><strong>${stats.poi}</strong></div><div class="stat-tile"><span>${t("totalTime")}</span><strong>${stats.isRoute ? formatTime(stats.total) : "-"}</strong></div><div class="stat-tile"><span>${t("moveTime")}</span><strong>${stats.isRoute ? `${formatDistance(stats.distance)} / ${formatTime(stats.move)}` : "-"}</strong></div><div class="stat-tile"><span>${t("utilization")}</span><strong>${stats.isRoute ? `${Math.round(stats.utilization*100)}%` : "-"}</strong></div></div><div class="panel-hint">${t("detailsHint")}</div></div><div class="timeline" tabindex="0">${steps || empty}</div></div>`;
 }
 
 function renderWhy(variant) {
@@ -453,9 +487,12 @@ function renderMeta(data, result) {
   const c = result.constraints || {};
   const inter = data.interaction || c.interaction || {};
   const needs = inter.user_needs || c.user_needs || {};
+  const budgetText = c.time_budget_hours
+    ? `${c.time_budget_hours}h${c.time_budget_source === "inferred" ? ` · ${t("budgetAuto")}` : ""}`
+    : "-";
   const pills = [
     [`${t("mode")}: ${c.user_mode_label || getModeLabel(c.user_mode)}`],
-    [`${t("budget")}: ${c.time_budget_hours || 4}h`],
+    [`${t("budget")}: ${budgetText}`],
     [`${t("radius")}: ${c.radius || radiusSelect.value}m`],
   ];
   if (inter.intent_hint) pills.push([`${t("intent")}: ${inter.intent_hint}`]);
@@ -469,6 +506,7 @@ function renderMeta(data, result) {
 function renderResult(data) {
   const result = data.result || {}; const perf = data.performance || {};
   currentResult = result; currentResult._perf = perf; currentResult._interaction = data.interaction || {}; currentResult._notice = data.notice;
+  currentResult._clarificationOptions = data.clarification_options || data.interaction?.clarification_options || [];
   currentVariants = result.variants || [];
   if (activeVariantIndex >= currentVariants.length) activeVariantIndex = 0;
 
@@ -478,9 +516,10 @@ function renderResult(data) {
 
   renderMeta(data, result);
   renderTabs(currentVariants);
+  const clarificationActions = renderClarificationActions(currentResult._clarificationOptions);
   variantPanels.innerHTML = currentVariants.length
     ? currentVariants.map((v, i) => renderVariantPanel(v, i)).join("")
-    : `<div class="empty-card">${escapeHtml(data.notice || t("noResult"))}</div>`;
+    : `<div class="empty-card"><p>${escapeHtml(data.notice || t("noResult"))}</p>${clarificationActions}</div>`;
 
   if (currentVariants.length > activeVariantIndex) renderWhy(currentVariants[activeVariantIndex]);
 
@@ -548,6 +587,21 @@ function handleStepAction(action, id) {
   if (action === "skip-stop") {
     showToast(t("skipTodo"));
   }
+}
+
+function focusPoiOnMap(id) {
+  const p = findPoi(id);
+  const loc = p?.location;
+  if (!p || !loc || !map) return;
+  if (isMobileViewport()) setMobileView("map");
+  setTimeout(() => {
+    map.setView([loc.lat, loc.lng], 17);
+    const marker = poiLayers.find(layer => {
+      const ll = layer.getLatLng?.();
+      return ll && Math.abs(ll.lat - loc.lat) < 0.000001 && Math.abs(ll.lng - loc.lng) < 0.000001;
+    });
+    marker?.openPopup?.();
+  }, 90);
 }
 
 // ---------- Planner ----------
@@ -619,10 +673,15 @@ document.getElementById("startFocusButton")?.addEventListener("click", () => { c
 emptyFixes?.addEventListener("click", e => { const b = e.target.closest("[data-fix]"); if (b) applyFix(b.dataset.fix); });
 variantPanels?.addEventListener("click", e => {
   const b = e.target.closest("[data-goal]");
-  if (!b) return;
-  goalInput.value = b.dataset.goal;
-  setMobileView("plan");
-  goalInput.focus();
+  if (b) {
+    goalInput.value = b.dataset.goal;
+    setMobileView("plan");
+    goalInput.focus();
+    return;
+  }
+  if (e.target.closest(".step-actions")) return;
+  const stop = e.target.closest(".stop[data-poi-id]");
+  if (stop) focusPoiOnMap(stop.dataset.poiId);
 });
 document.getElementById("clearSessionButton")?.addEventListener("click", async () => { try { await fetch("/api/session/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionInput.value.trim() || "default-session" }) }); setStatus(t("clearedSession")); showToast(t("clearedSession")); } catch(e) {} });
 document.getElementById("clearProfileButton")?.addEventListener("click", async () => { const uid = userInput.value.trim(); if (!uid) { setStatus(t("needUser")); return; } try { const r = await fetch("/api/profile/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: uid }) }); const d = await r.json(); if (!r.ok || !d.ok) throw new Error(d.error || "Clear failed"); const m = d.cleared ? t("clearedProfile") : t("noProfile"); setStatus(m); showToast(m); } catch(e) { setStatus(`Error: ${e.message}`); } });
