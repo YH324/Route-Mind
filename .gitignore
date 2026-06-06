@@ -13,6 +13,7 @@ screenshot*.png
 routemind*.tar.gz
 _check_server.py
 _check_*.py
+_deploy_*.py
 take_screenshot.py
 server_launcher.py
 web/backup/
