@@ -13,6 +13,8 @@ from route_planner_v3 import (
     _INTENT_LLM_UNAVAILABLE_UNTIL,
     _correct_candidate_type,
     _estimated_review_signal,
+    _route_feasibility_policy,
+    _segment_route_feasible,
     _score_poi_features,
 )
 
@@ -361,6 +363,20 @@ class TestBackendModelContract(unittest.TestCase):
         self.assertIn("商场", types, items)
         route = result["variants"][0].get("route", [])
         self.assertTrue(route, result["variants"][0])
+        feasibility = result["variants"][0].get("route_feasibility")
+        self.assertIsInstance(feasibility, dict)
+        self.assertTrue(feasibility.get("feasible"), feasibility)
+        self.assertGreater(feasibility.get("total_move_distance_m", 0), 0)
+        self.assertLessEqual(
+            feasibility.get("total_move_time_min", 0),
+            feasibility.get("policy", {}).get("max_total_move_time_min", 999),
+            feasibility,
+        )
+        self.assertLessEqual(
+            feasibility.get("max_detour_ratio", 0),
+            feasibility.get("policy", {}).get("max_detour_ratio", 999),
+            feasibility,
+        )
         self.assertIn("polyline", route[0].get("move_from_start", {}))
         if len(route) > 1:
             self.assertIn("polyline", route[1].get("move_from_prev", {}))
@@ -462,6 +478,46 @@ class TestBackendModelContract(unittest.TestCase):
             for step in route:
                 self.assertNotIn(step["type"], {"其他", "住宿", "医疗", "培训", "汽车"}, step)
                 self.assertFalse(any(term in step["name"] for term in bad_terms), step)
+
+    def test_route_feasibility_rejects_detours_and_excessive_total_movement(self):
+        policy = _route_feasibility_policy({
+            "time_budget_hours": 2,
+            "mode": "walk",
+            "user_mode": "tourist",
+            "intent_type": "simple_route",
+        })
+
+        ok, detail = _segment_route_feasible(
+            dist_m=900,
+            time_min=11,
+            direct_m=800,
+            policy=policy,
+            cumulative_move_time=0,
+            cumulative_move_distance=0,
+        )
+        self.assertTrue(ok, detail)
+
+        ok, detail = _segment_route_feasible(
+            dist_m=2800,
+            time_min=35,
+            direct_m=500,
+            policy=policy,
+            cumulative_move_time=0,
+            cumulative_move_distance=0,
+        )
+        self.assertFalse(ok, detail)
+        self.assertIn(detail["reason"], {"segment_too_long", "detour_ratio_too_high"})
+
+        ok, detail = _segment_route_feasible(
+            dist_m=900,
+            time_min=11,
+            direct_m=850,
+            policy=policy,
+            cumulative_move_time=policy["max_total_move_time_min"],
+            cumulative_move_distance=policy["max_total_move_distance_m"],
+        )
+        self.assertFalse(ok, detail)
+        self.assertIn(detail["reason"], {"total_move_time_too_high", "total_move_distance_too_high"})
 
 
 if __name__ == "__main__":

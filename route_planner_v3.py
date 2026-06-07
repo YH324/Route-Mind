@@ -27,7 +27,7 @@ MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CENTER_LNG = 104.06476
 DEFAULT_CENTER_LAT = 30.65705
 RANKING_MODEL_VERSION = "feature_ranker_v1.5"
-PLANNER_VERSION = "route_planner_v3.9"
+PLANNER_VERSION = "route_planner_v3.10"
 _REFERENCE_POIS_CACHE = None
 _INTENT_LLM_UNAVAILABLE_UNTIL = {}
 
@@ -1135,6 +1135,252 @@ def _travel_time_from_distance(dist_m, mode):
     return dist_m / 80 if mode == "walk" else dist_m / 200
 
 
+def _route_speed_m_per_min(mode):
+    return 80 if mode == "walk" else 200
+
+
+def _route_feasibility_policy(constraints, variant_name=None):
+    budget_min = max(float(constraints.get("time_budget_hours", 3) or 3) * 60, 30)
+    mode = constraints.get("mode", "walk")
+    user_mode = constraints.get("user_mode", "tourist")
+    intent_type = constraints.get("intent_type", "complex_route")
+    mode_cfg = _mode_config(constraints)
+    configured_segment = float(constraints.get("max_travel_min") or mode_cfg.get("max_travel_min", 30))
+
+    if intent_type == "simple_route":
+        configured_segment = min(configured_segment, max(12, budget_min * 0.22))
+    elif variant_name == "efficient":
+        configured_segment = min(configured_segment, 24)
+
+    share_by_mode = {"business": 0.26, "resident": 0.34, "tourist": 0.38}
+    cap_by_mode = {"business": 24, "resident": 55, "tourist": 95}
+    move_share = share_by_mode.get(user_mode, 0.35)
+    if intent_type == "simple_route":
+        move_share = min(move_share, 0.32)
+    if variant_name == "efficient":
+        move_share = min(move_share, 0.32)
+    if budget_min <= 90:
+        move_share = min(move_share, 0.28)
+
+    max_total_move_min = min(cap_by_mode.get(user_mode, 75), budget_min * move_share)
+    max_total_move_min = max(configured_segment, max_total_move_min)
+    speed = _route_speed_m_per_min(mode)
+    return {
+        "max_segment_time_min": configured_segment,
+        "max_total_move_time_min": max_total_move_min,
+        "max_segment_distance_m": configured_segment * speed * 1.15,
+        "max_total_move_distance_m": max_total_move_min * speed * 1.15,
+        "max_detour_ratio": 3.0 if mode == "walk" else 2.6,
+        "detour_eval_min_m": 350,
+        "move_share": move_share,
+    }
+
+
+def _segment_detour_ratio(dist_m, direct_m):
+    if direct_m is None or direct_m <= 1:
+        return 1.0
+    return max(1.0, float(dist_m or 0) / max(float(direct_m), 1.0))
+
+
+def _segment_route_feasible(dist_m, time_min, direct_m, policy,
+                            cumulative_move_time=0.0, cumulative_move_distance=0.0):
+    if dist_m is None or time_min is None:
+        return False, {"reason": "not_connected"}
+    detour_ratio = _segment_detour_ratio(dist_m, direct_m)
+    projected_time = float(cumulative_move_time or 0) + float(time_min or 0)
+    projected_dist = float(cumulative_move_distance or 0) + float(dist_m or 0)
+    detail = {
+        "distance_m": round(float(dist_m or 0), 1),
+        "time_min": round(float(time_min or 0), 1),
+        "direct_distance_m": round(float(direct_m or 0), 1),
+        "detour_ratio": round(detour_ratio, 3),
+        "projected_move_time_min": round(projected_time, 1),
+        "projected_move_distance_m": round(projected_dist, 1),
+    }
+    if time_min > policy["max_segment_time_min"]:
+        detail["reason"] = "segment_too_long"
+        return False, detail
+    if dist_m > policy["max_segment_distance_m"]:
+        detail["reason"] = "segment_distance_too_long"
+        return False, detail
+    if projected_time > policy["max_total_move_time_min"]:
+        detail["reason"] = "total_move_time_too_high"
+        return False, detail
+    if projected_dist > policy["max_total_move_distance_m"]:
+        detail["reason"] = "total_move_distance_too_high"
+        return False, detail
+    if direct_m >= policy["detour_eval_min_m"] and detour_ratio > policy["max_detour_ratio"]:
+        detail["reason"] = "detour_ratio_too_high"
+        return False, detail
+    detail["reason"] = "ok"
+    return True, detail
+
+
+def _route_mobility_penalty(time_min, dist_m, direct_m, policy,
+                            cumulative_move_time=0.0, cumulative_move_distance=0.0):
+    detour_ratio = _segment_detour_ratio(dist_m, direct_m)
+    projected_share = (float(cumulative_move_time or 0) + float(time_min or 0)) / max(policy["max_total_move_time_min"], 1)
+    penalty = -0.9 * (float(time_min or 0) / max(policy["max_segment_time_min"], 1))
+    penalty -= max(0.0, projected_share - 0.55) * 3.5
+    if direct_m >= policy["detour_eval_min_m"]:
+        penalty -= max(0.0, detour_ratio - 1.45) * 1.8
+    return penalty
+
+
+def _route_between_pois(network, knn_graph, from_poi, to_poi, mode):
+    if knn_graph:
+        dist_m, time_min = knn_graph.get_distance(from_poi["poi_id"], to_poi["poi_id"], mode)
+        if dist_m is not None and time_min is not None:
+            return dist_m, time_min, []
+    if network:
+        return network.get_route_between(from_poi["poi_id"], to_poi["poi_id"], mode)
+    dist_m = _straight_distance_m(
+        from_poi["longitude"], from_poi["latitude"], to_poi["longitude"], to_poi["latitude"]
+    )
+    return dist_m, _travel_time_from_distance(dist_m, mode), []
+
+
+def _route_sequence_metrics(route, constraints, network, knn_graph=None, variant_name=None):
+    mode = constraints.get("mode", "walk")
+    policy = _route_feasibility_policy(constraints, variant_name)
+    center_lng = constraints.get("center_lng", DEFAULT_CENTER_LNG)
+    center_lat = constraints.get("center_lat", DEFAULT_CENTER_LAT)
+    total_dist = 0.0
+    total_time = 0.0
+    direct_total = 0.0
+    max_segment_time = 0.0
+    max_segment_distance = 0.0
+    max_detour_ratio = 1.0
+    segments = []
+    prev_poi = None
+    for i, poi in enumerate(route):
+        if i == 0:
+            rank_context = poi.get("_route_rank_context") or {}
+            if rank_context.get("variant") == variant_name and rank_context.get("start_distance_m") is not None:
+                dist_m = rank_context.get("start_distance_m")
+                time_min = rank_context.get("start_travel_time_min")
+            else:
+                dist_m, time_min, _, _ = _route_from_location_to_poi(network, center_lng, center_lat, poi, mode)
+            direct_m = _straight_distance_m(center_lng, center_lat, poi["longitude"], poi["latitude"])
+        else:
+            dist_m, time_min, _ = _route_between_pois(network, knn_graph, prev_poi, poi, mode)
+            if dist_m is None:
+                return {
+                    "feasible": False,
+                    "reason": "not_connected",
+                    "segments": segments,
+                }
+            direct_m = _straight_distance_m(
+                prev_poi["longitude"], prev_poi["latitude"], poi["longitude"], poi["latitude"]
+            )
+        feasible, detail = _segment_route_feasible(dist_m, time_min, direct_m, policy, total_time, total_dist)
+        detail["order"] = i + 1
+        detail["poi_id"] = poi["poi_id"]
+        detail["name"] = poi.get("name")
+        segments.append(detail)
+        if not feasible:
+            return {
+                "feasible": False,
+                "reason": detail.get("reason"),
+                "segments": segments,
+                "policy": {
+                    "max_segment_time_min": round(policy["max_segment_time_min"], 1),
+                    "max_total_move_time_min": round(policy["max_total_move_time_min"], 1),
+                    "max_detour_ratio": round(policy["max_detour_ratio"], 2),
+                },
+            }
+        total_dist += float(dist_m or 0)
+        total_time += float(time_min or 0)
+        direct_total += float(direct_m or 0)
+        max_segment_time = max(max_segment_time, float(time_min or 0))
+        max_segment_distance = max(max_segment_distance, float(dist_m or 0))
+        max_detour_ratio = max(max_detour_ratio, _segment_detour_ratio(dist_m, direct_m))
+        prev_poi = poi
+    compactness = direct_total / max(total_dist, 1.0) if total_dist else 1.0
+    return {
+        "feasible": True,
+        "reason": "ok",
+        "total_move_distance_m": round(total_dist, 1),
+        "total_move_time_min": round(total_time, 1),
+        "direct_distance_sum_m": round(direct_total, 1),
+        "compactness": round(compactness, 3),
+        "max_segment_time_min": round(max_segment_time, 1),
+        "max_segment_distance_m": round(max_segment_distance, 1),
+        "max_detour_ratio": round(max_detour_ratio, 3),
+        "segments": segments,
+        "policy": {
+            "max_segment_time_min": round(policy["max_segment_time_min"], 1),
+            "max_total_move_time_min": round(policy["max_total_move_time_min"], 1),
+            "max_detour_ratio": round(policy["max_detour_ratio"], 2),
+        },
+    }
+
+
+def _public_route_feasibility(metrics):
+    if not metrics:
+        return {}
+    return {
+        "feasible": bool(metrics.get("feasible")),
+        "reason": metrics.get("reason"),
+        "total_move_distance_m": metrics.get("total_move_distance_m"),
+        "total_move_time_min": metrics.get("total_move_time_min"),
+        "direct_distance_sum_m": metrics.get("direct_distance_sum_m"),
+        "compactness": metrics.get("compactness"),
+        "max_segment_time_min": metrics.get("max_segment_time_min"),
+        "max_segment_distance_m": metrics.get("max_segment_distance_m"),
+        "max_detour_ratio": metrics.get("max_detour_ratio"),
+        "policy": metrics.get("policy", {}),
+    }
+
+
+def _public_route_segment_feasibility(detail):
+    if not detail:
+        return {}
+    fields = [
+        "reason",
+        "distance_m",
+        "time_min",
+        "direct_distance_m",
+        "detour_ratio",
+        "projected_move_time_min",
+        "projected_move_distance_m",
+    ]
+    return {key: detail.get(key) for key in fields if key in detail}
+
+
+def _route_metrics_from_segments(segments, policy):
+    segments = segments or []
+    feasible = all((seg or {}).get("reason") == "ok" for seg in segments)
+    total_dist = sum(float((seg or {}).get("distance_m") or 0) for seg in segments)
+    total_time = sum(float((seg or {}).get("time_min") or 0) for seg in segments)
+    direct_total = sum(float((seg or {}).get("direct_distance_m") or 0) for seg in segments)
+    max_segment_time = max([float((seg or {}).get("time_min") or 0) for seg in segments] or [0.0])
+    max_segment_distance = max([float((seg or {}).get("distance_m") or 0) for seg in segments] or [0.0])
+    max_detour_ratio = max([float((seg or {}).get("detour_ratio") or 1.0) for seg in segments] or [1.0])
+    reason = "ok"
+    for seg in segments:
+        if (seg or {}).get("reason") != "ok":
+            reason = (seg or {}).get("reason") or "route_not_feasible"
+            break
+    return {
+        "feasible": feasible,
+        "reason": reason,
+        "total_move_distance_m": round(total_dist, 1),
+        "total_move_time_min": round(total_time, 1),
+        "direct_distance_sum_m": round(direct_total, 1),
+        "compactness": round(direct_total / max(total_dist, 1.0), 3) if total_dist else 1.0,
+        "max_segment_time_min": round(max_segment_time, 1),
+        "max_segment_distance_m": round(max_segment_distance, 1),
+        "max_detour_ratio": round(max_detour_ratio, 3),
+        "segments": segments,
+        "policy": {
+            "max_segment_time_min": round(policy["max_segment_time_min"], 1),
+            "max_total_move_time_min": round(policy["max_total_move_time_min"], 1),
+            "max_detour_ratio": round(policy["max_detour_ratio"], 2),
+        },
+    }
+
+
 def _route_from_location_to_poi(network, from_lng, from_lat, poi, mode):
     to_lng = poi["longitude"]
     to_lat = poi["latitude"]
@@ -1726,7 +1972,8 @@ def _build_recommendation_basis(score, features, reasons, arrival_time=None, ope
                                 distance_m=None, travel_time_min=None, variant_name=None,
                                 semantic_boost=0.0, sequence_boost=0.0, distance_penalty=0.0,
                                 special_bonus=0.0, variant_bonus=0.0, start_selection_bonus=0.0,
-                                start_fallback=False, llm_review_bonus=0.0, llm_review_reason=None):
+                                start_fallback=False, llm_review_bonus=0.0, llm_review_reason=None,
+                                route_feasibility=None):
     full_features = dict(features)
     if arrival_time is not None:
         full_features["arrival_time"] = arrival_time
@@ -1755,14 +2002,26 @@ def _build_recommendation_basis(score, features, reasons, arrival_time=None, ope
         full_features["llm_candidate_review_bonus"] = _round_feature(llm_review_bonus)
     if llm_review_reason:
         full_features["llm_candidate_review_reason"] = llm_review_reason
+    public_segment = _public_route_segment_feasibility(route_feasibility)
+    if public_segment:
+        full_features["route_segment_feasibility"] = public_segment
 
-    top_reasons = list(reasons)
+    mobility_reasons = []
+    if travel_time_min is not None:
+        mobility_reasons.append(f"移动约 {travel_time_min:.1f} 分钟")
+    if public_segment and public_segment.get("reason") == "ok":
+        detour = public_segment.get("detour_ratio")
+        projected_time = public_segment.get("projected_move_time_min")
+        if detour is not None:
+            mobility_reasons.append(f"本段路线绕行系数约 {detour:.2f}")
+        if projected_time is not None:
+            mobility_reasons.append(f"累计移动时间约 {projected_time:.1f} 分钟，仍在可执行范围内")
+
+    top_reasons = mobility_reasons + list(reasons)
     if open_at_arrival:
         top_reasons.append("抵达时段可营业或无关闭数据")
     else:
         top_reasons.append("抵达时段营业风险较高")
-    if travel_time_min is not None:
-        top_reasons.append(f"移动约 {travel_time_min:.1f} 分钟")
     if semantic_boost:
         top_reasons.append("语义检索命中当前目标")
     if sequence_boost:
@@ -1876,6 +2135,7 @@ def _model_metadata(intent_result, constraints, trace, semantic_poi_ids=None):
             "semantic_needs",
             "session_and_user_profile",
             "route_diversity_constraints",
+            "route_feasibility_constraints",
         ],
         "candidate_pipeline": trace,
         "semantic": {
@@ -2018,9 +2278,13 @@ def build_route_v3(pois_or_candidates, gt_data, constraints, hours_map, network,
     mode_cfg = _mode_config(constraints)
     max_shopping = mode_cfg.get("max_shopping", 2 if variant_name == "efficient" else 3)
     max_travel_min = mode_cfg.get("max_travel_min", 30)
+    route_policy = _route_feasibility_policy(constraints, variant_name)
+    max_travel_min = min(max_travel_min, route_policy["max_segment_time_min"])
     category_counts = {}         # 大类计数
     concrete_type_counts = {}    # 具体类型计数（避免火锅+火锅）
     visited_categories = set()   # 已经"离开过"的大类（单向约束）
+    total_move_distance = 0.0
+    total_move_time = 0.0
 
     # 选择起点：从Top-N营业候选中，根据变体偏好选择最匹配的
     open_candidates = []
@@ -2088,6 +2352,10 @@ def build_route_v3(pois_or_candidates, gt_data, constraints, hours_map, network,
     start_fallback_used = False
     for s, p in open_candidates:
         start_dist_m, start_time_min, _, _ = _route_from_location_to_poi(network, center_lng, center_lat, p, mode)
+        direct_m = _straight_distance_m(center_lng, center_lat, p["longitude"], p["latitude"])
+        feasible, _ = _segment_route_feasible(start_dist_m, start_time_min, direct_m, route_policy)
+        if not feasible:
+            continue
         arrival_str = (current_time + timedelta(minutes=start_time_min)).strftime("%H:%M")
         if start_time_min <= max_travel_min and is_open_at(p["poi_id"], arrival_str, hours_map):
             start_travel[p["poi_id"]] = (start_dist_m, start_time_min)
@@ -2102,6 +2370,9 @@ def build_route_v3(pois_or_candidates, gt_data, constraints, hours_map, network,
                 continue
             start_dist_m = _straight_distance_m(center_lng, center_lat, p["longitude"], p["latitude"])
             start_time_min = _travel_time_from_distance(start_dist_m, mode)
+            feasible, _ = _segment_route_feasible(start_dist_m, start_time_min, start_dist_m, route_policy)
+            if not feasible:
+                continue
             arrival_str = (current_time + timedelta(minutes=start_time_min)).strftime("%H:%M")
             if start_time_min <= max_travel_min and is_open_at(p["poi_id"], arrival_str, hours_map):
                 start_travel[p["poi_id"]] = (start_dist_m, start_time_min)
@@ -2151,6 +2422,8 @@ def build_route_v3(pois_or_candidates, gt_data, constraints, hours_map, network,
             "distance_penalty": 0.0,
             "start_selection_bonus": round(start_rank_score - s, 3),
             "start_fallback": start_fallback_used,
+            "start_distance_m": start_travel.get(p["poi_id"], (0, 0))[0],
+            "start_travel_time_min": start_travel.get(p["poi_id"], (0, 0))[1],
         }
         current_poi = p
         rt = type_index.get(p["poi_id"], "其他") if type_index else "其他"
@@ -2161,7 +2434,9 @@ def build_route_v3(pois_or_candidates, gt_data, constraints, hours_map, network,
         if _is_shopping_type(rt):
             shopping_count += 1
         stay = _stay_minutes(rt, constraints, variant_name=variant_name)
-        _, start_time_min = start_travel.get(p["poi_id"], (0, 0))
+        start_dist_m, start_time_min = start_travel.get(p["poi_id"], (0, 0))
+        total_move_distance += start_dist_m
+        total_move_time += start_time_min
         current_time += timedelta(minutes=start_time_min + stay)
         total_time += start_time_min + stay
 
@@ -2223,28 +2498,16 @@ def build_route_v3(pois_or_candidates, gt_data, constraints, hours_map, network,
                 if shopping_count >= max_shopping:
                     continue
 
-            # 路网距离（优先用KNN缓存图）
-            if knn_graph:
-                dist_m, time_min = knn_graph.get_distance(current_poi["poi_id"], pid, mode)
-                if dist_m is None:
-                    continue
-                path = []
-            elif network:
-                dist_m, time_min, path = network.get_route_between(current_poi["poi_id"], pid, mode)
-                if dist_m is None:
-                    continue
-            else:
-                #  fallback直线距离
-                from math import radians, sin, cos, sqrt, atan2
-                R = 6371000
-                dlon = radians(p["longitude"] - current_poi["longitude"])
-                dlat = radians(p["latitude"] - current_poi["latitude"])
-                a = sin(dlat/2)**2 + cos(radians(current_poi["latitude"])) * cos(radians(p["latitude"])) * sin(dlon/2)**2
-                dist_m = 2 * R * atan2(sqrt(a), sqrt(1-a))
-                time_min = dist_m / 80 if mode == "walk" else dist_m / 200
-                path = []
-
-            if time_min > max_travel_min:
+            dist_m, time_min, path = _route_between_pois(network, knn_graph, current_poi, p, mode)
+            if dist_m is None:
+                continue
+            direct_m = _straight_distance_m(
+                current_poi["longitude"], current_poi["latitude"], p["longitude"], p["latitude"]
+            )
+            feasible, feasibility_detail = _segment_route_feasible(
+                dist_m, time_min, direct_m, route_policy, total_move_time, total_move_distance
+            )
+            if not feasible:
                 continue
 
             # 营业时间检查：必须按抵达时间判断，而不是离开上一站的时间。
@@ -2277,8 +2540,10 @@ def build_route_v3(pois_or_candidates, gt_data, constraints, hours_map, network,
                 if _sequence_type_matches(rt, expected_type):
                     sequence_boost = 50.0  # 强制优先选择顺序中的下一个类型
                     s += sequence_boost
-            # 距离惩罚（v3加强：超过15min的移动大幅扣分）
-            distance_penalty = -((time_min / 15) * 0.8)
+            # 移动成本惩罚：同时考虑单段时间、累计移动占比和绕行比例。
+            distance_penalty = _route_mobility_penalty(
+                time_min, dist_m, direct_m, route_policy, total_move_time, total_move_distance
+            )
             s += distance_penalty
             if time_min > 30:
                 distance_penalty -= 2.0  # 超过30分钟的移动额外惩罚
@@ -2300,6 +2565,7 @@ def build_route_v3(pois_or_candidates, gt_data, constraints, hours_map, network,
                     "variant_bonus": variant_bonus,
                     "sequence_boost": sequence_boost,
                     "distance_penalty": distance_penalty,
+                    "route_feasibility": feasibility_detail,
                 }
 
         if best_poi is None:
@@ -2329,6 +2595,8 @@ def build_route_v3(pois_or_candidates, gt_data, constraints, hours_map, network,
                 visited_categories.add(prev_cat)
 
         stay = _stay_minutes(rt, constraints, variant=variant)
+        total_move_distance += best_dist or 0.0
+        total_move_time += best_time or 0.0
         current_time += timedelta(minutes=best_time + stay)
         total_time += best_time + stay
 
@@ -2362,6 +2630,7 @@ def build_route_v3(pois_or_candidates, gt_data, constraints, hours_map, network,
             best_preferred = None
             best_preferred_score = -999
             best_context = None
+            best_replace_idx = -1
             for p in candidates:
                 pid = p["poi_id"]
                 if pid in used:
@@ -2370,43 +2639,48 @@ def build_route_v3(pois_or_candidates, gt_data, constraints, hours_map, network,
                 if _sequence_type_matches(rt, missing_type):
                     gt = gt_data.get(pid, {})
                     score, features, reasons, _ = _score_poi_features(p, gt, constraints, route_types, network, type_index)
-                    if score > best_preferred_score:
-                        best_preferred_score = score
-                        best_preferred = p
-                        best_context = (features, reasons)
-            
-            if best_preferred:
-                # 替换路线中最后一个非关键POI（优先替换"其他"或低优先级类型）
-                replace_idx = -1
-                for i in range(len(route) - 1, -1, -1):
-                    rt = type_index.get(route[i]["poi_id"], "其他") if type_index else "其他"
-                    if not any(_sequence_type_matches(rt, required) for required in required_types) and _get_category(rt) not in ("餐饮", "景点"):
-                        replace_idx = i
-                        break
-                if replace_idx < 0 and len(route) > 1:
+                    replace_candidates = []
                     for i in range(len(route) - 1, -1, -1):
-                        rt = type_index.get(route[i]["poi_id"], "其他") if type_index else "其他"
-                        if not any(_sequence_type_matches(rt, required) for required in required_types):
-                            replace_idx = i
-                            break
-                
-                if replace_idx >= 0:
-                    used.remove(route[replace_idx]["poi_id"])
-                    used.add(best_preferred["poi_id"])
-                    best_preferred["_route_rank_context"] = {
-                        "variant": variant_name,
-                        "rank_score": round(best_preferred_score, 3),
-                        "semantic_boost": SEMANTIC_BOOST if semantic_poi_ids and best_preferred["poi_id"] in semantic_poi_ids else 0.0,
-                        "variant_bonus": 0.0,
-                        "sequence_boost": 0.0,
-                        "distance_penalty": 0.0,
-                        "forced_preference_replacement": True,
-                    }
-                    if best_context:
-                        best_preferred["_route_rank_context"]["forced_preference_features"] = best_context[0]
-                        best_preferred["_route_rank_context"]["forced_preference_reasons"] = best_context[1]
-                    route[replace_idx] = best_preferred
-                    present_types.add(missing_type)
+                        cur_rt = type_index.get(route[i]["poi_id"], "其他") if type_index else "其他"
+                        if not any(_sequence_type_matches(cur_rt, required) for required in required_types) and _get_category(cur_rt) not in ("餐饮", "景点"):
+                            replace_candidates.append(i)
+                    if not replace_candidates and len(route) > 1:
+                        for i in range(len(route) - 1, -1, -1):
+                            cur_rt = type_index.get(route[i]["poi_id"], "其他") if type_index else "其他"
+                            if not any(_sequence_type_matches(cur_rt, required) for required in required_types):
+                                replace_candidates.append(i)
+                    for replace_idx in replace_candidates:
+                        trial_route = list(route)
+                        trial_route[replace_idx] = p
+                        metrics = _route_sequence_metrics(trial_route, constraints, network, knn_graph, variant_name)
+                        if not metrics.get("feasible"):
+                            continue
+                        mobility_bonus = max(0.0, 1.0 - metrics.get("total_move_time_min", 0) / max(route_policy["max_total_move_time_min"], 1))
+                        candidate_score = score + mobility_bonus
+                        if candidate_score > best_preferred_score:
+                            best_preferred_score = candidate_score
+                            best_preferred = p
+                            best_context = (features, reasons, metrics)
+                            best_replace_idx = replace_idx
+
+            if best_preferred and best_replace_idx >= 0:
+                used.remove(route[best_replace_idx]["poi_id"])
+                used.add(best_preferred["poi_id"])
+                best_preferred["_route_rank_context"] = {
+                    "variant": variant_name,
+                    "rank_score": round(best_preferred_score, 3),
+                    "semantic_boost": SEMANTIC_BOOST if semantic_poi_ids and best_preferred["poi_id"] in semantic_poi_ids else 0.0,
+                    "variant_bonus": 0.0,
+                    "sequence_boost": 0.0,
+                    "distance_penalty": 0.0,
+                    "forced_preference_replacement": True,
+                    "route_feasibility": best_context[2] if best_context else None,
+                }
+                if best_context:
+                    best_preferred["_route_rank_context"]["forced_preference_features"] = best_context[0]
+                    best_preferred["_route_rank_context"]["forced_preference_reasons"] = best_context[1]
+                route[best_replace_idx] = best_preferred
+                present_types.add(missing_type)
         if sequence:
             ordered = []
             used_ids = set()
@@ -2427,6 +2701,17 @@ def build_route_v3(pois_or_candidates, gt_data, constraints, hours_map, network,
                     ordered.append(poi)
             route = ordered[:len(route)]
 
+    final_metrics = _route_sequence_metrics(route, constraints, network, knn_graph, variant_name)
+    if not final_metrics.get("feasible"):
+        print("[RouteFail] Route violates mobility policy: {}".format(final_metrics.get("reason")))
+        return []
+    for poi in route:
+        context = poi.get("_route_rank_context")
+        if context is not None:
+            context["route_policy"] = final_metrics.get("policy")
+    if route:
+        route[0]["_route_feasibility"] = final_metrics
+
     return route
 
 
@@ -2435,11 +2720,13 @@ def format_route_v3(route, constraints, gt_data, hours_map, network, variant_nam
     mode = constraints["mode"]
     start_time = datetime.strptime(constraints["start_time"], "%H:%M")
     current_time = start_time
+    route_policy = _route_feasibility_policy(constraints, variant_name)
 
     steps = []
     total_move = 0
     total_move_time = 0
     route_types_so_far = set()
+    segment_metrics = []
 
     for i, poi in enumerate(route):
         if type_index:
@@ -2457,12 +2744,25 @@ def format_route_v3(route, constraints, gt_data, hours_map, network, variant_nam
         if i == 0:
             from_lng = constraints.get("center_lng", DEFAULT_CENTER_LNG)
             from_lat = constraints.get("center_lat", DEFAULT_CENTER_LAT)
-            dist_m, time_min, path, coords = _route_from_location_to_poi(network, from_lng, from_lat, poi, mode)
+            rank_context = poi.get("_route_rank_context") or {}
+            if rank_context.get("variant") == variant_name and rank_context.get("start_distance_m") is not None:
+                dist_m = rank_context.get("start_distance_m")
+                time_min = rank_context.get("start_travel_time_min")
+                path = []
+                coords = [[from_lat, from_lng], [poi["latitude"], poi["longitude"]]]
+            else:
+                dist_m, time_min, path, coords = _route_from_location_to_poi(network, from_lng, from_lat, poi, mode)
+            direct_m = _straight_distance_m(from_lng, from_lat, poi["longitude"], poi["latitude"])
         else:
             prev = route[i - 1]
+            dist_m = None
+            time_min = None
+            path = []
             if network:
                 dist_m, time_min, path = network.get_route_between(prev["poi_id"], poi["poi_id"], mode)
-            else:
+            if (dist_m is None or time_min is None) and knn_graph:
+                dist_m, time_min, path = _route_between_pois(None, knn_graph, prev, poi, mode)
+            if dist_m is None or time_min is None:
                 from math import radians, sin, cos, sqrt, atan2
                 R = 6371000
                 dlon = radians(poi["longitude"] - prev["longitude"])
@@ -2471,10 +2771,17 @@ def format_route_v3(route, constraints, gt_data, hours_map, network, variant_nam
                 dist_m = 2 * R * atan2(sqrt(a), sqrt(1-a))
                 time_min = dist_m / 80 if mode == "walk" else dist_m / 200
                 path = []
-            if dist_m is None:
-                dist_m = 0
-                time_min = 0
-                path = []
+            direct_m = _straight_distance_m(
+                prev["longitude"], prev["latitude"], poi["longitude"], poi["latitude"]
+            )
+
+        _, segment_feasibility = _segment_route_feasible(
+            dist_m, time_min, direct_m, route_policy, total_move_time, total_move
+        )
+        segment_feasibility["order"] = i + 1
+        segment_feasibility["poi_id"] = poi["poi_id"]
+        segment_feasibility["name"] = poi.get("name")
+        segment_metrics.append(segment_feasibility)
 
         if i == 0:
             total_move += dist_m
@@ -2512,6 +2819,7 @@ def format_route_v3(route, constraints, gt_data, hours_map, network, variant_nam
             variant_bonus=rank_context.get("variant_bonus", 0.0),
             start_selection_bonus=rank_context.get("start_selection_bonus", 0.0),
             start_fallback=rank_context.get("start_fallback", False),
+            route_feasibility=segment_feasibility,
         )
 
         step = {
@@ -2530,6 +2838,7 @@ def format_route_v3(route, constraints, gt_data, hours_map, network, variant_nam
             "business_hours": hours_map.get(poi["poi_id"], {}),
             "recommendation_basis": recommendation_basis,
             "review_summary": _build_review_summary(poi, rt, gt, recommendation_basis),
+            "route_segment_feasibility": _public_route_segment_feasibility(segment_feasibility),
         }
 
         # 从起点到第一个 POI
@@ -2578,6 +2887,7 @@ def format_route_v3(route, constraints, gt_data, hours_map, network, variant_nam
         steps.append(step)
 
     total_time = (current_time - start_time).total_seconds() / 60
+    route_feasibility = _route_metrics_from_segments(segment_metrics, route_policy)
     return {
         "variant_id": variant_name,
         "name": {"efficient": "紧凑高效", "relaxed": "休闲慢游", "food_first": "美食探店"}[variant_name],
@@ -2588,6 +2898,7 @@ def format_route_v3(route, constraints, gt_data, hours_map, network, variant_nam
         "total_move_distance": round(total_move, 1),
         "time_utilization": round(total_time / (constraints["time_budget_hours"] * 60), 2),
         "start_location": {"lng": constraints.get("center_lng", DEFAULT_CENTER_LNG), "lat": constraints.get("center_lat", DEFAULT_CENTER_LAT)},
+        "route_feasibility": _public_route_feasibility(route_feasibility),
         "route": steps,
     }
 
@@ -3179,6 +3490,12 @@ def _build_sequence_recommendation_variant(candidates, gt_data, constraints, hou
         return None
     recs = []
     used = set()
+    route_policy = _route_feasibility_policy(constraints, "relaxed")
+    mode = constraints.get("mode", "walk")
+    current_time_for_selection = datetime.strptime(constraints.get("start_time", "09:00"), "%H:%M")
+    prev_lng, prev_lat = center_lng, center_lat
+    cumulative_move_distance = 0.0
+    cumulative_move_time = 0.0
     for expected in sequence:
         scored = []
         expected_cat = _get_category(expected)
@@ -3192,24 +3509,45 @@ def _build_sequence_recommendation_variant(candidates, gt_data, constraints, hou
                 continue
             if _is_excluded_by_mode(rt, constraints):
                 continue
-            if not is_open_at(pid, constraints.get("start_time", "09:00"), hours_map):
+            dist_m = _straight_distance_m(prev_lng, prev_lat, p["longitude"], p["latitude"])
+            time_min = _travel_time_from_distance(dist_m, mode)
+            feasible, feasibility_detail = _segment_route_feasible(
+                dist_m, time_min, dist_m, route_policy, cumulative_move_time, cumulative_move_distance
+            )
+            if not feasible:
+                continue
+            arrival_str = (current_time_for_selection + timedelta(minutes=time_min)).strftime("%H:%M")
+            if not is_open_at(pid, arrival_str, hours_map):
                 continue
             gt = gt_data.get(pid, {})
             score, features, reasons, _ = _score_poi_features(p, gt, constraints, set(), None, type_index)
             sequence_boost = 5.0
-            score += sequence_boost
-            scored.append((score, p, rt, cat, features, reasons, sequence_boost))
+            mobility_penalty = _route_mobility_penalty(
+                time_min, dist_m, dist_m, route_policy, cumulative_move_time, cumulative_move_distance
+            )
+            score += sequence_boost + mobility_penalty
+            scored.append((
+                score, p, rt, cat, features, reasons, sequence_boost,
+                dist_m, time_min, feasibility_detail, mobility_penalty, arrival_str
+            ))
         scored.sort(key=lambda x: -x[0])
         if scored:
-            score, p, rt, cat, features, reasons, sequence_boost = scored[0]
+            (
+                score, p, rt, cat, features, reasons, sequence_boost,
+                dist_m, time_min, feasibility_detail, mobility_penalty, arrival_str
+            ) = scored[0]
             used.add(p["poi_id"])
             recommendation_basis = _build_recommendation_basis(
                 score,
                 features,
                 reasons,
-                arrival_time=constraints.get("start_time", "09:00"),
+                arrival_time=arrival_str,
                 open_at_arrival=True,
+                distance_m=dist_m,
+                travel_time_min=time_min,
                 sequence_boost=sequence_boost,
+                distance_penalty=mobility_penalty,
+                route_feasibility=feasibility_detail,
             )
             recs.append({
                 "poi_id": p["poi_id"],
@@ -3223,10 +3561,14 @@ def _build_sequence_recommendation_variant(candidates, gt_data, constraints, hou
                 "recommendation_basis": recommendation_basis,
                 "review_summary": _build_review_summary(p, rt, gt_data.get(p["poi_id"], {}), recommendation_basis),
             })
+            stay = _stay_minutes(rt, constraints, variant_name="relaxed")
+            cumulative_move_distance += dist_m
+            cumulative_move_time += time_min
+            current_time_for_selection += timedelta(minutes=time_min + stay)
+            prev_lng, prev_lat = p["longitude"], p["latitude"]
     if not recs:
         return None
     route_steps = []
-    mode = constraints.get("mode", "walk")
     current_time = datetime.strptime(constraints.get("start_time", "09:00"), "%H:%M")
     prev_lng, prev_lat = center_lng, center_lat
     total_move = 0.0
@@ -3265,6 +3607,18 @@ def _build_sequence_recommendation_variant(candidates, gt_data, constraints, hou
         current_time = dep_time
         prev_lng, prev_lat = loc["lng"], loc["lat"]
     total_time = (current_time - datetime.strptime(constraints.get("start_time", "09:00"), "%H:%M")).total_seconds() / 60
+    route_pois = [
+        {
+            "poi_id": rec["poi_id"],
+            "name": rec["name"],
+            "longitude": rec["location"]["lng"],
+            "latitude": rec["location"]["lat"],
+        }
+        for rec in recs
+    ]
+    route_metrics = _route_sequence_metrics(route_pois, constraints, None, None, "relaxed")
+    if not route_metrics.get("feasible"):
+        return None
     return {
         "variant_id": "sequence_fallback",
         "name": "顺序候选路线",
@@ -3275,6 +3629,7 @@ def _build_sequence_recommendation_variant(candidates, gt_data, constraints, hou
         "total_move_distance": round(total_move, 1),
         "time_utilization": round(total_time / max(constraints["time_budget_hours"] * 60, 1), 2),
         "start_location": {"lng": center_lng, "lat": center_lat},
+        "route_feasibility": _public_route_feasibility(route_metrics),
         "route": route_steps,
         "recommendations": recs,
     }
