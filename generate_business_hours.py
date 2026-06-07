@@ -2,13 +2,11 @@
 """
 POI营业时间生成器
 
-为每个POI生成营业时间，基于真实类型规则 + 随机扰动
+为每个POI生成营业时间，基于真实类型画像、POI 稳定标识和空间密度估计。
 """
 import json
-import random
+import hashlib
 from ugc_type_profiles import infer_real_type
-
-random.seed(42)
 
 # 类型 -> (open_hour, open_minute, close_hour, close_minute, 是否跨天)
 # 跨天表示 close_time < open_time（如KTV开到凌晨）
@@ -43,34 +41,55 @@ BUSINESS_HOURS_RULES = {
 }
 
 
+def stable_bucket(value, modulo):
+    digest = hashlib.sha1(str(value).encode("utf-8")).hexdigest()
+    return int(digest[:8], 16) % modulo
+
+
+def stable_offset(value, low, high):
+    return low + stable_bucket(value, high - low + 1)
+
+
+def normalize_clock(hour, minute, allow_24=False):
+    total = hour * 60 + minute
+    if allow_24:
+        total = max(0, min(24 * 60, total))
+    else:
+        total = max(0, min(24 * 60 - 1, total))
+    return total // 60, total % 60
+
+
 def generate_hours(poi):
     real_type = infer_real_type(poi)
     rule = BUSINESS_HOURS_RULES.get(real_type, BUSINESS_HOURS_RULES["其他"])
 
-    # 添加随机扰动（±30分钟）
     open_h, open_m = rule["open"]
     close_h, close_m = rule["close"]
 
-    # 随机扰动
-    open_m += random.randint(-30, 30)
-    close_m += random.randint(-30, 30)
+    poi_key = "{}:{}:{}".format(
+        poi.get("poi_id"),
+        round(float(poi.get("longitude", 0)), 5),
+        round(float(poi.get("latitude", 0)), 5),
+    )
+    density = float(poi.get("grid_density", 0) or 0)
+    density_shift = -10 if density >= 120 else 10 if density <= 8 else 0
+    open_m += stable_offset(poi_key + ":open", -20, 20) + density_shift
+    close_m += stable_offset(poi_key + ":close", -20, 20)
 
-    # 规范化
-    open_h += open_m // 60
-    open_m = open_m % 60
-    close_h += close_m // 60
-    close_m = close_m % 60
+    # 规范化，避免离线生成出现越界时间。
+    open_h, open_m = normalize_clock(open_h, open_m)
+    close_h, close_m = normalize_clock(close_h, close_m, allow_24=True)
 
     # 部分POI有午休（中餐类）
     lunch_break = None
-    if real_type in ["中餐", "小吃"] and random.random() < 0.3:
+    if real_type in ["中餐", "小吃"] and stable_bucket(poi_key + ":lunch", 10) < 3:
         lunch_break = {"start": "14:00", "end": "17:00"}
 
     # 部分POI周一休息或特殊营业
     closed_days = []
-    if real_type in ["景点", "博物馆"] and random.random() < 0.5:
+    if real_type in ["景点", "博物馆"] and stable_bucket(poi_key + ":closed", 10) < 5:
         closed_days = ["周一"]
-    if real_type in ["美容", "美发"] and random.random() < 0.3:
+    if real_type in ["美容", "美发"] and stable_bucket(poi_key + ":closed", 10) < 3:
         closed_days = ["周二"]
 
     def fmt(h, m):

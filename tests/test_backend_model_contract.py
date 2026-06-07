@@ -14,6 +14,7 @@ from route_planner_v3 import (
     _correct_candidate_type,
     _estimated_review_signal,
     _route_feasibility_policy,
+    _select_route_from_slate,
     _segment_route_feasible,
     _score_poi_features,
 )
@@ -121,7 +122,8 @@ class TestBackendModelContract(unittest.TestCase):
         self.assertNotEqual(result["model"]["intent"].get("provider"), "fallback")
 
     def test_configured_llm_is_tried_before_local_intent_gate(self):
-        with patch("route_planner_v3.MIMO_API_KEY", "test-key"), \
+        with patch("route_planner_v3.DEEPSEEK_API_KEY", ""), \
+             patch("route_planner_v3.MIMO_API_KEY", "test-key"), \
              patch("route_planner_v3.MINIMAX_API_KEY", ""), \
              patch("route_planner_v3.GLM_API_KEY", ""), \
              patch.dict(_INTENT_LLM_UNAVAILABLE_UNTIL, {}, clear=True), \
@@ -138,8 +140,29 @@ class TestBackendModelContract(unittest.TestCase):
         self.assertTrue(result["llm_used"])
         self.assertEqual(result["provider"], "mimo")
 
+    def test_deepseek_is_first_llm_provider_when_configured(self):
+        with patch("route_planner_v3.DEEPSEEK_API_KEY", "deepseek-key"), \
+             patch("route_planner_v3.MIMO_API_KEY", "mimo-key"), \
+             patch("route_planner_v3.MINIMAX_API_KEY", ""), \
+             patch("route_planner_v3.GLM_API_KEY", ""), \
+             patch.dict(_INTENT_LLM_UNAVAILABLE_UNTIL, {}, clear=True), \
+             patch("route_planner_v3._call_llm_api") as call_llm:
+            call_llm.return_value = {
+                "intent_type": "single_poi",
+                "reason": "DeepSeek 判断为单点需求",
+            }
+
+            result = classify_intent_with_llm("春熙路附近想吃火锅")
+
+        self.assertTrue(call_llm.called)
+        self.assertEqual(call_llm.call_args[0][0], "https://api.deepseek.com/chat/completions")
+        self.assertEqual(result["intent_type"], "single_poi")
+        self.assertTrue(result["llm_used"])
+        self.assertEqual(result["provider"], "deepseek")
+
     def test_failed_intent_llm_uses_cooldown_before_local_fallback(self):
-        with patch("route_planner_v3.MIMO_API_KEY", "test-key"), \
+        with patch("route_planner_v3.DEEPSEEK_API_KEY", ""), \
+             patch("route_planner_v3.MIMO_API_KEY", "test-key"), \
              patch("route_planner_v3.MINIMAX_API_KEY", ""), \
              patch("route_planner_v3.GLM_API_KEY", ""), \
              patch("route_planner_v3.INTENT_LLM_FAILURE_COOLDOWN_SECONDS", 60), \
@@ -380,6 +403,13 @@ class TestBackendModelContract(unittest.TestCase):
         self.assertIn("polyline", route[0].get("move_from_start", {}))
         if len(route) > 1:
             self.assertIn("polyline", route[1].get("move_from_prev", {}))
+        slate_trace = result["model"]["candidate_pipeline"].get("route_slate_evaluator", {})
+        self.assertTrue(slate_trace, result["model"]["candidate_pipeline"])
+        selected = next(iter(slate_trace.values()))
+        self.assertGreaterEqual(selected.get("generated_count", 0), 1)
+        self.assertIn("selected_features", selected)
+        self.assertIn("intent_coverage", selected["selected_features"])
+        self.assertIn("route_compactness", selected["selected_features"])
 
     def test_coffee_query_prefers_coffee_named_places(self):
         response = run_agent(
@@ -518,6 +548,50 @@ class TestBackendModelContract(unittest.TestCase):
         )
         self.assertFalse(ok, detail)
         self.assertIn(detail["reason"], {"total_move_time_too_high", "total_move_distance_too_high"})
+
+    def test_route_slate_evaluator_accepts_llm_review_without_generating_new_pois(self):
+        constraints = {
+            "raw_goal": "sample route",
+            "time_budget_hours": 2,
+            "mode": "walk",
+            "user_mode": "tourist",
+            "intent_type": "simple_route",
+            "preferred_tags": ["餐饮", "饮品"],
+            "sequence": [],
+            "center_lng": 104.06476,
+            "center_lat": 30.65705,
+        }
+        p1 = {"poi_id": "p1", "name": "A餐厅", "longitude": 104.0648, "latitude": 30.6571, "grid_density": 20, "tags": []}
+        p2 = {"poi_id": "p2", "name": "B咖啡", "longitude": 104.0652, "latitude": 30.6572, "grid_density": 30, "tags": []}
+        p3 = {"poi_id": "p3", "name": "C茶馆", "longitude": 104.0655, "latitude": 30.6574, "grid_density": 25, "tags": []}
+        gt_data = {
+            "p1": {"overall": 4.2},
+            "p2": {"overall": 4.5},
+            "p3": {"overall": 4.4},
+        }
+        type_index = {"p1": "中餐", "p2": "饮品", "p3": "茶馆"}
+
+        with patch("route_planner_v3.ENABLE_LLM_ROUTE_REVIEW", True), \
+             patch("route_planner_v3._call_first_available_llm_json") as call_llm:
+            call_llm.return_value = ("mock-llm", {"items": [{"route_id": "route_1", "bonus": 0.8, "reason": "更符合组合需求"}]})
+            route, trace = _select_route_from_slate(
+                "sample route",
+                [p1, p2],
+                [p1, p2, p3],
+                gt_data,
+                constraints,
+                None,
+                "relaxed",
+                type_index=type_index,
+                knn_graph=None,
+                semantic_poi_ids=set(),
+            )
+
+        self.assertTrue(call_llm.called)
+        self.assertEqual({poi["poi_id"] for poi in route}, {"p1", "p2"})
+        self.assertGreaterEqual(trace["generated_count"], 1)
+        self.assertTrue(trace["llm_route_review"]["used"])
+        self.assertIn("llm_route_review_bonus", trace["selected_features"])
 
 
 if __name__ == "__main__":

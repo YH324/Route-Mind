@@ -14,7 +14,6 @@
 - CrowdAwareScorer: 实时人流规避（排队惩罚）
 - AggregateSignal:  匿名群体偏好信号
 """
-import random
 from datetime import datetime
 
 
@@ -206,7 +205,7 @@ class WeatherAwareScorer:
     """
     基于天气状况的POI推荐调整。
     信息来源：公开天气API（如和风天气），零隐私风险。
-    当前为mock实现，未来接入真实天气API。
+    未接入外部天气信号时不参与评分，避免用推测天气影响推荐。
     """
 
     WEATHER_PROFILES = {
@@ -239,21 +238,10 @@ class WeatherAwareScorer:
     def __init__(self, weather_code=None):
         """
         Args:
-            weather_code: 天气代码，None表示自动mock（成都当前天气）
+            weather_code: 天气代码。None 表示当前请求没有可用天气信号。
         """
-        self.weather_code = weather_code or self._mock_weather()
-        self.profile = self.WEATHER_PROFILES.get(self.weather_code, self.WEATHER_PROFILES["cloudy"])
-
-    def _mock_weather(self):
-        """模拟当前天气（实际生产环境调用和风/OpenWeatherMap API）"""
-        # 简单mock：根据月份推断
-        month = datetime.now().month
-        if month in [6, 7, 8]:
-            return random.choice(["sunny_hot", "rain", "cloudy"])
-        elif month in [12, 1, 2]:
-            return random.choice(["cloudy", "rain", "snow"])
-        else:
-            return random.choice(["sunny", "cloudy", "rain"])
+        self.weather_code = weather_code
+        self.profile = self.WEATHER_PROFILES.get(weather_code, {}) if weather_code else {}
 
     def score_adjustment(self, poi_type):
         boost = self.profile.get("boost", {})
@@ -270,34 +258,16 @@ class CrowdAwareScorer:
     """
     基于POI实时人流/排队数据的评分调整。
     信息来源：平台匿名聚合数据（美团排队、高德人流指数）。
-    当前为mock实现，未来接入平台实时数据API。
+    未接入外部人流信号时不参与评分。
     """
 
     def __init__(self, crowd_data=None):
         """
         Args:
             crowd_data: {poi_id: {"wait_min": 30, "crowd_level": "high"}}
-                       None表示自动生成mock数据
+                       None 表示当前请求没有可用人流信号
         """
         self.crowd_data = crowd_data or {}
-
-    def mock_crowd_data(self, poi_ids, peak_factor=1.0):
-        """生成mock人流数据（实际生产环境从平台API获取）"""
-        for pid in poi_ids:
-            # 模拟：周末晚上人流高，工作日中午高
-            hour = datetime.now().hour
-            is_weekend = datetime.now().weekday() >= 5
-            base_wait = random.randint(0, 20)
-            if is_weekend and hour in [18, 19, 20]:
-                base_wait += random.randint(20, 60)
-            elif hour in [12, 13]:
-                base_wait += random.randint(10, 30)
-            base_wait = int(base_wait * peak_factor)
-            if base_wait > 5:
-                self.crowd_data[pid] = {
-                    "wait_min": base_wait,
-                    "crowd_level": "high" if base_wait > 30 else "medium" if base_wait > 15 else "low"
-                }
 
     def score_adjustment(self, poi_id):
         """排队时间越长的POI扣分越多"""
@@ -323,23 +293,15 @@ class CrowdAwareScorer:
 class AggregateSignal:
     """
     基于大规模匿名统计的偏好信号。
-    不是"因为你喜欢火锅所以推荐火锅"，而是"周六晚上春熙路68%的人选择火锅"。
+    没有传入聚合统计时不参与评分。
     """
 
-    # mock数据：实际生产环境从平台聚合统计获取
-    SIGNALS = {
-        ("weekend", "evening", "chunxi"): {"火锅": 0.68, "烧烤": 0.45, "酒吧": 0.32, "商场": 0.25},
-        ("weekend", "afternoon", "chunxi"): {"商场": 0.55, "甜品": 0.42, "咖啡": 0.38, "景点": 0.30},
-        ("weekday", "lunch", "any"): {"中餐": 0.62, "快餐": 0.55, "小吃": 0.40},
-        ("rainy", "any", "any"): {"商场": 0.55, "电影院": 0.38, "茶馆": 0.25, "火锅": 0.30},
-        ("holiday", "any", "any"): {"景点": 0.72, "小吃": 0.58, "商场": 0.35},
-    }
-
-    def __init__(self, area="chunxi"):
+    def __init__(self, area="chunxi", signals=None, is_holiday=False):
         self.area = area
         self.hour = datetime.now().hour
         self.is_weekend = datetime.now().weekday() >= 5
-        self.is_holiday = False  # 实际生产环境接节假日API
+        self.is_holiday = bool(is_holiday)
+        self.signals = signals or {}
 
     def get_signal(self, poi_type):
         """获取该类型在当前场景的群体偏好信号（0~1之间）"""
@@ -347,15 +309,15 @@ class AggregateSignal:
 
         # 时段+区域信号
         if self.hour >= 18:
-            signals.append(self.SIGNALS.get(("weekend" if self.is_weekend else "weekday", "evening", self.area), {}))
+            signals.append(self.signals.get(("weekend" if self.is_weekend else "weekday", "evening", self.area), {}))
         elif self.hour >= 12:
-            signals.append(self.SIGNALS.get(("weekend" if self.is_weekend else "weekday", "lunch", "any"), {}))
+            signals.append(self.signals.get(("weekend" if self.is_weekend else "weekday", "lunch", "any"), {}))
         else:
-            signals.append(self.SIGNALS.get(("weekend" if self.is_weekend else "weekday", "afternoon", self.area), {}))
+            signals.append(self.signals.get(("weekend" if self.is_weekend else "weekday", "afternoon", self.area), {}))
 
         # 节假日信号
         if self.is_holiday:
-            signals.append(self.SIGNALS.get(("holiday", "any", "any"), {}))
+            signals.append(self.signals.get(("holiday", "any", "any"), {}))
 
         # 取平均
         if not signals:
@@ -377,12 +339,13 @@ class PersonalizationEngine:
     聚合所有轻个性化信号，输出最终评分调整。
     """
 
-    def __init__(self, session=None, weather_code=None, crowd_data=None, area="chunxi"):
+    def __init__(self, session=None, weather_code=None, crowd_data=None, area="chunxi",
+                 aggregate_signals=None, is_holiday=False):
         self.session = session or SessionContext()
         self.time_scorer = TimeAwareScorer()
         self.weather_scorer = WeatherAwareScorer(weather_code)
         self.crowd_scorer = CrowdAwareScorer(crowd_data)
-        self.aggregate = AggregateSignal(area)
+        self.aggregate = AggregateSignal(area, signals=aggregate_signals, is_holiday=is_holiday)
 
     def get_context_hints(self):
         """返回给用户的上下午/天气提示"""

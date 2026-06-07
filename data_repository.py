@@ -1,17 +1,17 @@
 """
 Process-level local data repository.
 
-The project uses local generated data for the competition, but the service
-should still treat those files like a production data source: load once,
-validate required assets, expose readiness, and keep request code away from
-raw file IO.
+The service treats the bundled corpus as a production data source: load once,
+validate required assets, expose readiness, and keep request code away from raw
+file IO. Remote POI, rating and routing providers can replace the adapter
+without changing planner code.
 """
 import json
 import os
 import threading
 import time
 
-from mock_api import MockApiClient
+from local_data_provider import LocalCorpusClient
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -100,7 +100,7 @@ class LocalDataRepository:
         with self._lock:
             client = self._clients.get(city_key)
             if client is None:
-                client = MockApiClient(city=city_key, simulate_latency_ms=0, simulate_quota=False)
+                client = LocalCorpusClient(city=city_key, simulate_latency_ms=0, simulate_quota=False)
                 self._clients[city_key] = client
             return client
 

@@ -110,6 +110,10 @@ ENABLE_CORS=1
 LOG_LEVEL=INFO
 
 # ===== 必须填入真实 API Key =====
+DEEPSEEK_API_KEY=
+DEEPSEEK_CHAT_URL=https://api.deepseek.com/chat/completions
+DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_AUTH_TYPE=bearer
 MIMO_API_KEY=
 MINIMAX_API_KEY=
 GLM_API_KEY=
@@ -124,7 +128,7 @@ EOF
     echo ""
     echo "  nano $ENV_FILE"
     echo ""
-    echo "  必填项: MINIMAX_API_KEY 和/或 GLM_API_KEY"
+    echo "  必填项: DEEPSEEK_API_KEY 或其他可用模型服务 Key"
     echo ""
 fi
 

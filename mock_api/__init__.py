@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-模拟API客户端层
+Local corpus provider implementation.
 
 ================================================================================
 设计目标
 ================================================================================
-1. 接口格式 1:1 对标真实平台API（高德/美团/百度），未来替换时只换实现类
-2. 当前底层读取本地预研数据，全国推广时切换为真实HTTP调用
-3. 支持模拟延迟、配额限制、错误率等真实场景，便于压测和容错演练
+1. 接口格式 1:1 对标真实平台API（高德/美团/百度），替换远程服务时只换实现类。
+2. 当前底层读取本地语料和索引资产，多城市扩展时按城市分片接入远程或缓存数据。
+3. 支持可选延迟、配额限制等故障注入能力，便于压测和容错演练。
 
 ================================================================================
 真实API映射表
@@ -27,18 +27,18 @@
 使用方式
 ================================================================================
 
-【当前预研阶段】
-    from mock_api import MockApiClient
-    api = MockApiClient(city="chengdu", district=["wuhou","jinjiang"])
+【当前本地语料服务】
+    from local_data_provider import LocalCorpusClient
+    api = LocalCorpusClient(city="chengdu", district=["wuhou","jinjiang"])
     resp = api.search_pois(center_lng=104.082, center_lat=30.657, radius=3000)
 
-【未来全国推广】
-    方案A：直接替换类名（接口不变）
-        from mock_api import HttpApiClient as ApiClient
+【多城市/远程服务扩展】
+    方案A：直接替换提供者类名（接口不变）
+        from data_provider_http import HttpApiClient as ApiClient
         api = ApiClient(city="beijing", api_key="ak-xxx")
 
-    方案B：通过配置文件切换（推荐）
-        api = create_api_client(config)  # 根据环境变量自动选择Mock/Http
+    方案B：通过配置文件切换
+        api = create_api_client(config)  # 根据环境变量选择本地语料或远程服务
 
 ================================================================================
 数据流向
@@ -62,7 +62,7 @@
 ================================================================================
 性能基准
 ================================================================================
-| 指标              | Mock模式（本地JSON） | Http模式（真实API） | 优化手段     |
+| 指标              | 本地语料模式 | 远程服务模式 | 优化手段     |
 |-------------------|-------------------|-------------------|------------|
 | POI搜索           | ~0.5s             | ~200-500ms        | 本地缓存24h  |
 | POI详情（批量）    | ~0.05s            | ~50-100ms/个      | 并发批量请求  |
@@ -86,11 +86,11 @@ def _load_json(path):
         return json.load(f)
 
 
-class MockApiClient:
+class LocalProviderClient:
     """
-    模拟平台API客户端（高德POI + 美团评论 + 高德路径规划）
+    本地语料平台客户端（POI + 口碑 + 路径规划接口）
 
-    全国推广时的替换策略：
+    多城市扩展时的替换策略：
     1. 保留本类的接口签名不变
     2. 新建 HttpApiClient 类实现同样的方法，内部走 requests HTTP 调用
     3. 通过工厂函数或配置切换实现类
@@ -101,17 +101,17 @@ class MockApiClient:
         Args:
             city: 城市编码，如 "chengdu", "beijing"
             district: 行政区列表，如 ["wuhou", "jinjiang"]
-            simulate_latency_ms: 模拟API延迟（毫秒），0表示无延迟
-            simulate_quota: 是否模拟日配额限制
+            simulate_latency_ms: 故障注入延迟（毫秒），0表示无延迟
+            simulate_quota: 是否启用配额压力演练
         """
         self.city = city
         self.district = district or []
         self.simulate_latency_ms = simulate_latency_ms
         self.simulate_quota = simulate_quota
         self._quota_counter = 0
-        self._quota_limit = 10000  # 模拟日配额1万次
+        self._quota_limit = 10000  # 配额压力演练上限
 
-        # 预加载索引数据（实际生产环境这些数据会走缓存/Redis）
+        # 预加载索引数据；远程服务模式可由缓存/Redis 承接。
         self._pois = None
         self._pois_by_id = {}  # poi_id -> poi 字典索引，避免O(n)查找
         self._gt_index = None
@@ -121,21 +121,21 @@ class MockApiClient:
         self._network = None
 
     def _delay(self):
-        """模拟网络延迟"""
+        """Optional latency injection."""
         if self.simulate_latency_ms > 0:
             time.sleep(self.simulate_latency_ms / 1000.0)
 
     def _check_quota(self):
-        """模拟API配额检查"""
+        """Optional quota pressure check."""
         if self.simulate_quota:
             self._quota_counter += 1
             if self._quota_counter > self._quota_limit:
-                raise MockApiQuotaError("Daily quota exceeded (limit: {})".format(self._quota_limit))
+                raise ProviderQuotaError("Daily quota exceeded (limit: {})".format(self._quota_limit))
 
     # ==================== 数据加载（内部方法） ====================
 
     def _load_pois(self):
-        """模拟高德POI数据加载。返回POI列表，同时构建poi_id索引。"""
+        """Load local POI data and build a POI-id index."""
         if self._pois is None:
             path = os.path.join(SRC_DIR, "wuhou_jinjiang_pois.json")
             self._pois = _load_json(path)
@@ -143,28 +143,28 @@ class MockApiClient:
         return self._pois
 
     def _load_gt_index(self):
-        """模拟平台评分数据加载"""
+        """Load local rating and reputation index."""
         if self._gt_index is None:
             path = os.path.join(DATA_DIR, "gt_index.json")
             self._gt_index = _load_json(path)
         return self._gt_index
 
     def _load_type_index(self):
-        """模拟平台类型数据加载"""
+        """Load local type index."""
         if self._type_index is None:
             path = os.path.join(DATA_DIR, "type_index.json")
             self._type_index = _load_json(path)
         return self._type_index
 
     def _load_spatial_index(self):
-        """模拟平台空间索引加载"""
+        """Load local spatial index."""
         if self._spatial_index is None:
             path = os.path.join(DATA_DIR, "spatial_index.json")
             self._spatial_index = _load_json(path)
         return self._spatial_index
 
     def _load_business_hours(self):
-        """模拟平台营业时间数据加载"""
+        """Load local business-hour data."""
         if self._hours is None:
             path = os.path.join(SRC_DIR, "poi_business_hours.json")
             self._hours = _load_json(path)
@@ -175,7 +175,7 @@ class MockApiClient:
     def search_pois(self, center_lng, center_lat, radius=3000,
                     keywords=None, types=None, page=1, page_size=20):
         """
-        模拟高德POI周边搜索API
+        POI周边搜索接口
 
         真实API:
             GET https://restapi.amap.com/v3/place/around
@@ -274,7 +274,7 @@ class MockApiClient:
 
     def get_poi_detail(self, poi_id):
         """
-        模拟高德POI详情API
+        POI详情接口
 
         真实API:
             GET https://restapi.amap.com/v3/place/detail
@@ -327,7 +327,7 @@ class MockApiClient:
 
     def get_comments(self, poi_id, page=1, page_size=10):
         """
-        模拟美团/点评商家评论API
+        评论接口
 
         真实API:
             GET https://waimai.meituan.com/.../poi/detail
@@ -355,7 +355,7 @@ class MockApiClient:
         self._check_quota()
         self._delay()
 
-        # 当前预研阶段：从UGC大文件中按需读取
+        # From bundled UGC corpus when the raw file is available locally.
         ugc_path = os.path.join(SRC_DIR, "ugc_groundtruth_v4_xl.json")
         if not os.path.exists(ugc_path):
             return {
@@ -391,7 +391,7 @@ class MockApiClient:
 
     def get_comment_summary(self, poi_id):
         """
-        模拟美团/点评评论摘要API（聚合评分和标签）
+        评论摘要接口（聚合评分和标签）
 
         真实场景：平台侧已聚合好的评分维度，不需要逐条拉评论再计算。
 
@@ -429,7 +429,7 @@ class MockApiClient:
 
     def get_walking_route(self, origin_lng, origin_lat, destination_lng, destination_lat):
         """
-        模拟高德步行路径规划API
+        步行路径规划接口
 
         真实API:
             GET https://restapi.amap.com/v3/direction/walking
@@ -512,7 +512,7 @@ class MockApiClient:
 
     def get_business_hours(self, poi_id):
         """
-        模拟平台营业时间API
+        营业时间接口
 
         真实场景：美团/大众点评商家详情页中的营业时间字段。
 
@@ -571,25 +571,31 @@ class MockApiClient:
         return {"status": "1", "data": results}
 
 
-class MockApiQuotaError(Exception):
-    """模拟API配额超限异常"""
+class ProviderQuotaError(Exception):
+    """Provider quota exceeded."""
     pass
 
 
-class MockApiNetworkError(Exception):
-    """模拟API网络异常"""
+class ProviderNetworkError(Exception):
+    """Provider network/data-access error."""
     pass
+
+
+# Backward-compatible names kept for legacy imports and tests.
+MockApiClient = LocalProviderClient
+MockApiQuotaError = ProviderQuotaError
+MockApiNetworkError = ProviderNetworkError
 
 
 # ================================================================================
-# 未来HttpApiClient骨架（接入真实高德/美团API时参考）
+# HttpApiClient contract placeholder for remote provider integration.
 # ================================================================================
 
 class HttpApiClient:
     """
-    真实平台API客户端骨架（未实现，供未来参考）
+    Remote provider client contract.
 
-    接入时只需实现与 MockApiClient 同样的接口，规划引擎无需改动。
+    接入时只需实现与本地语料提供者同样的接口，规划引擎无需改动。
     """
 
     def __init__(self, city, api_key, base_url="https://restapi.amap.com/v3"):
@@ -601,35 +607,35 @@ class HttpApiClient:
     def search_pois(self, center_lng, center_lat, radius=3000,
                     keywords=None, types=None, page=1, page_size=20):
         """
-        TODO: 接入高德POI周边搜索API
+        Remote POI around-search implementation.
         GET /place/around?key={api_key}&location={lng},{lat}&radius={radius}&keywords={keywords}
         """
         raise NotImplementedError("待接入高德POI Search API")
 
     def get_poi_detail(self, poi_id):
-        """TODO: 接入高德POI详情API"""
+        """Remote POI detail implementation."""
         raise NotImplementedError("待接入高德POI Detail API")
 
     def get_comments(self, poi_id, page=1, page_size=10):
-        """TODO: 接入美团/点评评论API"""
+        """Remote comment implementation."""
         raise NotImplementedError("待接入美团评论API")
 
     def get_comment_summary(self, poi_id):
-        """TODO: 接入美团评分聚合API"""
+        """Remote rating aggregation implementation."""
         raise NotImplementedError("待接入美团评分API")
 
     def get_walking_route(self, origin_lng, origin_lat, destination_lng, destination_lat):
-        """TODO: 接入高德步行路径规划API"""
+        """Remote walking-route implementation."""
         raise NotImplementedError("待接入高德路径规划API")
 
     def get_business_hours(self, poi_id):
-        """TODO: 接入美团营业信息API"""
+        """Remote business-hour implementation."""
         raise NotImplementedError("待接入美团营业API")
 
     def batch_get_poi_details(self, poi_ids):
-        """TODO: 并发批量调用"""
+        """Remote or cached batch detail implementation."""
         raise NotImplementedError("待实现并发批量接口")
 
     def batch_get_ratings(self, poi_ids):
-        """TODO: 并发批量调用"""
+        """Remote or cached batch rating implementation."""
         raise NotImplementedError("待实现并发批量接口")

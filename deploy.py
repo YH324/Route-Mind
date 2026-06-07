@@ -18,7 +18,7 @@ from pathlib import Path
 import paramiko
 
 # ============ 配置 ============
-HOST = "47.102.142.207"
+HOST = "124.223.28.124"
 USER = "root"
 REMOTE_DIR = "/opt/routemind"
 LOCAL_PROJECT = Path(__file__).parent.resolve()
@@ -219,7 +219,7 @@ WantedBy=multi-user.target
         print("     systemctl restart routemind")
     else:
         print("  ⚠️  服务可能未启动，请检查日志:")
-        print("     ssh root@47.102.142.207 'journalctl -u routemind --no-pager -n 30'")
+        print(f"     ssh {USER}@{HOST} 'journalctl -u routemind --no-pager -n 30'")
     print("=" * 50)
     return 0
 

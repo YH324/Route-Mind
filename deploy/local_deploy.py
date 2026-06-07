@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
-SERVER_HOST = "47.102.142.207"
+SERVER_HOST = "124.223.28.124"
 SERVER_USER = "root"
 REMOTE_PATH = "/opt/routemind"
 
@@ -71,7 +71,12 @@ def main():
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     pkg_name = f"routemind_{ts}"
     temp_dir = Path(os.environ.get("TEMP", "/tmp")) / pkg_name
-    pkg_file = Path(out_file) if out_file else (temp_dir.parent / f"{pkg_name}.tar.gz")
+    if out_file:
+        pkg_file = Path(out_file)
+        if not pkg_file.is_absolute():
+            pkg_file = PROJECT_ROOT / pkg_file
+    else:
+        pkg_file = temp_dir.parent / f"{pkg_name}.tar.gz"
 
     print(f"[PACK] 创建临时目录: {temp_dir}")
     if temp_dir.exists():

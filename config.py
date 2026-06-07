@@ -64,7 +64,11 @@ def _chat_url(key, base_key, default):
 
 
 # ========== API Keys ==========
-# 优先级：MiMo -> MiniMax Coding Plan -> GLM -> 本地语义兜底
+# 优先级：DeepSeek -> MiMo -> MiniMax Coding Plan -> GLM -> 本地语义兜底
+DEEPSEEK_API_KEY = _env("DEEPSEEK_API_KEY", "")
+DEEPSEEK_CHAT_URL = _chat_url("DEEPSEEK_CHAT_URL", "DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+DEEPSEEK_MODEL = _env("DEEPSEEK_MODEL", "deepseek-chat")
+DEEPSEEK_AUTH_TYPE = _env("DEEPSEEK_AUTH_TYPE", "bearer")
 MIMO_API_KEY = _env("MIMO_API_KEY", "")
 MIMO_CHAT_URL = _chat_url("MIMO_CHAT_URL", "MIMO_BASE_URL", "https://token-plan-cn.xiaomimimo.com/v1")
 MIMO_MODEL = _env("MIMO_MODEL", "mimo-v2.5-pro")
@@ -124,6 +128,13 @@ SEMANTIC_BOOST = _env_float("SEMANTIC_BOOST", 2.5)
 ENABLE_LLM_CANDIDATE_REVIEW = _env_bool("ENABLE_LLM_CANDIDATE_REVIEW", True)
 LLM_REVIEW_CANDIDATE_TOP_N = _env_int("LLM_REVIEW_CANDIDATE_TOP_N", 12)
 LLM_REVIEW_BONUS = _env_float("LLM_REVIEW_BONUS", 1.2)
+
+# 路线级候选方案评审：只在已生成的路线候选之间重排，资源可按场景调度。
+ENABLE_LLM_ROUTE_REVIEW = _env_bool("ENABLE_LLM_ROUTE_REVIEW", True)
+LLM_ROUTE_REVIEW_TOP_N = _env_int("LLM_ROUTE_REVIEW_TOP_N", 5)
+LLM_ROUTE_REVIEW_BONUS = _env_float("LLM_ROUTE_REVIEW_BONUS", 1.5)
+ROUTE_SLATE_MAX_CANDIDATES = _env_int("ROUTE_SLATE_MAX_CANDIDATES", 28)
+ROUTE_SLATE_REPLACEMENT_TOP_N = _env_int("ROUTE_SLATE_REPLACEMENT_TOP_N", 8)
 
 # 营业时间自动调整
 AUTO_TIME_PERCENTILE = _env_int("AUTO_TIME_PERCENTILE", 60)

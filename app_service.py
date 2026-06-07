@@ -288,8 +288,14 @@ def run_agent(payload, request_id=None):
         center_lat = normalized["center_lat"]
         center_lng = normalized["center_lng"]
 
-        # 1. 获取 POI 数据
-        poi_resp = repository.search_pois(city, center_lng, center_lat, radius=radius, page_size=10000)
+        # 1. 获取 POI 数据。取数半径保留适度冗余，规划层仍会按用户目标和模式收紧有效半径；
+        #    这样显式多目标路线不会因为上游召回过窄而找不到可行组合。
+        retrieval_radius = radius
+        if any(term in effective_goal for term in ("超市", "买菜", "采购")):
+            retrieval_radius = max(retrieval_radius, 5000)
+        elif any(term in effective_goal for term in ("逛街", "购物", "商场", "购物中心")):
+            retrieval_radius = max(retrieval_radius, 3500)
+        poi_resp = repository.search_pois(city, center_lng, center_lat, radius=retrieval_radius, page_size=10000)
         pois = _pois_from_api_response(poi_resp)
 
         if not pois:

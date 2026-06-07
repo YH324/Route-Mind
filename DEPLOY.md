@@ -54,7 +54,7 @@ python deploy.py
 
 ```bash
 # 在 PowerShell 或 Git Bash 中执行
-scp %TEMP%\routemind_20260606_xxxxxx.tar.gz root@47.102.142.207:/opt/routemind/
+scp %TEMP%\routemind_20260606_xxxxxx.tar.gz root@124.223.28.124:/opt/routemind/
 ```
 
 > 提示输入密码时，输入服务器 root 密码。
@@ -64,7 +64,7 @@ scp %TEMP%\routemind_20260606_xxxxxx.tar.gz root@47.102.142.207:/opt/routemind/
 ## 4. 服务器端配置（SSH 登录后执行）
 
 ```bash
-ssh root@47.102.142.207
+ssh root@124.223.28.124
 
 # 创建目录并解压
 mkdir -p /opt/routemind
@@ -97,8 +97,10 @@ nano /opt/routemind/app/.env
 修改以下行，填入真实 Key：
 
 ```ini
-MINIMAX_API_KEY=your_minimax_key_here
-GLM_API_KEY=your_glm_key_here
+DEEPSEEK_API_KEY=your_deepseek_key_here
+DEEPSEEK_CHAT_URL=https://api.deepseek.com/chat/completions
+DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_AUTH_TYPE=bearer
 ```
 
 > MiMo 当前已禁用，可不填。
@@ -116,10 +118,10 @@ systemctl status routemind
 
 ```bash
 # 本地健康检查
-curl http://47.102.142.207:8000/api/health
+curl http://124.223.28.124:8000/api/health
 
 # 验证规划接口
-curl -X POST http://47.102.142.207:8000/api/v2/plan \
+curl -X POST http://124.223.28.124:8000/api/v2/plan \
   -H "Content-Type: application/json" \
   -d '{"goal":"春熙路附近，下午四点想吃火锅","city":"成都","mode":"tourist"}'
 ```

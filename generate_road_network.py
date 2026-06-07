@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-模拟路网生成器
+POI 路网生成器
 
 策略：基于POI的k近邻稀疏路网
 - 每个POI作为图节点
 - 每个POI连接最近8-12个邻居（2000m范围内）
-- 边权重 = 直线距离 × 道路系数（模拟实际道路绕行）
+- 边权重 = 直线距离 × 道路系数（估计实际道路绕行）
 - 道路系数取决于区域密度和道路类型
 
 输出：chengdu_road_network.json
@@ -16,11 +16,9 @@
 """
 import json
 import math
-import random
 import sys
 from collections import defaultdict
 
-random.seed(42)
 sys.stdout.reconfigure(line_buffering=True)
 
 
@@ -66,23 +64,32 @@ def decide_road_type(poi_a, poi_b, density_a, density_b):
     dist = haversine(poi_a["longitude"], poi_a["latitude"],
                      poi_b["longitude"], poi_b["latitude"])
 
-    # 高密度区域更可能是小巷/步行街
+    mix = "{}:{}".format(poi_a["poi_id"], poi_b["poi_id"])
+    bucket = stable_bucket(mix + ":road", 100)
+
+    # 高密度区域更可能是小巷/步行街，低密度区域更可能是主干道。
     if avg_density >= 30:
         if dist < 300:
-            return random.choice(["步行街", "小巷"])
-        else:
-            return random.choice(["次干道", "小巷"])
+            return "步行街" if bucket < 58 else "小巷"
+        return "次干道" if bucket < 55 else "小巷"
     elif avg_density >= 15:
         if dist < 400:
-            return random.choice(["次干道", "步行街"])
-        else:
-            return random.choice(["主干道", "次干道"])
-    else:
-        return random.choice(["主干道", "快速路"])
+            return "次干道" if bucket < 62 else "步行街"
+        return "主干道" if bucket < 60 else "次干道"
+    return "主干道" if bucket < 72 else "快速路"
 
 
-def road_coefficient(road_type):
-    """道路绕行系数"""
+def stable_bucket(value, modulo):
+    text = str(value)
+    acc = 2166136261
+    for ch in text:
+        acc ^= ord(ch)
+        acc = (acc * 16777619) & 0xFFFFFFFF
+    return acc % modulo
+
+
+def road_coefficient_for_edge(road_type, source_id, target_id):
+    """Deterministic detour coefficient for a road segment."""
     coeffs = {
         "快速路": (1.15, 1.30),
         "主干道": (1.20, 1.40),
@@ -91,7 +98,8 @@ def road_coefficient(road_type):
         "小巷": (1.50, 1.90),
     }
     lo, hi = coeffs.get(road_type, (1.3, 1.6))
-    return random.uniform(lo, hi)
+    ratio = stable_bucket("{}:{}:{}".format(source_id, target_id, road_type), 1000) / 999.0
+    return lo + (hi - lo) * ratio
 
 
 def speed_kmh(road_type, mode):
@@ -158,7 +166,7 @@ def generate_network(poi_path, out_path, k_neighbors=10, max_radius_m=2000):
             edge_set.add(key)
 
             road_type = decide_road_type(poi, neighbor, density, neighbor.get("grid_density", 1))
-            coeff = road_coefficient(road_type)
+            coeff = road_coefficient_for_edge(road_type, pid, nid)
             actual_dist = straight_dist * coeff
             walk_time = actual_dist / (speed_kmh(road_type, "walk") * 1000 / 60)
             bike_time = actual_dist / (speed_kmh(road_type, "bike") * 1000 / 60) if speed_kmh(road_type, "bike") > 0 else None

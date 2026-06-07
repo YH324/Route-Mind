@@ -12,10 +12,10 @@
 import json
 import os
 import re
-import random
 import time
 import urllib.request
 import math
+from itertools import permutations
 from datetime import datetime, timedelta
 from collections import Counter, defaultdict
 
@@ -52,6 +52,7 @@ def _load_reference_pois():
 
 # LLM API 配置（用于意图分类）
 from config import (
+    DEEPSEEK_API_KEY, DEEPSEEK_CHAT_URL, DEEPSEEK_MODEL, DEEPSEEK_AUTH_TYPE,
     MIMO_API_KEY, MIMO_CHAT_URL, MIMO_MODEL, MIMO_AUTH_TYPE,
     MINIMAX_API_KEY, MINIMAX_CHAT_URL, MINIMAX_MODEL, MINIMAX_AUTH_TYPE,
     GLM_API_KEY, GLM_CHAT_URL, GLM_MODEL, GLM_AUTH_TYPE,
@@ -62,6 +63,8 @@ from config import (
     VARIANT_PARAMS, CANDIDATE_POOL_SIZE,
     PERSIST_KNN_CACHE, ENABLE_LLM_CANDIDATE_REVIEW,
     LLM_REVIEW_CANDIDATE_TOP_N, LLM_REVIEW_BONUS,
+    ENABLE_LLM_ROUTE_REVIEW, LLM_ROUTE_REVIEW_TOP_N, LLM_ROUTE_REVIEW_BONUS,
+    ROUTE_SLATE_MAX_CANDIDATES, ROUTE_SLATE_REPLACEMENT_TOP_N,
 )
 
 
@@ -115,12 +118,12 @@ def _looks_like_nearby_single_goal(text):
 def _deterministic_intent_guard(goal_text, intent):
     """用高置信语义信号约束 LLM 误判，避免短单点需求被扩成完整路线。"""
     text = goal_text.lower()
-    if _looks_like_nearby_single_goal(text):
-        return "single_poi"
     if _contains_any(text, STRONG_COMPLEX_ROUTE_SIGNALS):
         return intent
     if _contains_any(text, SEQUENCE_SIGNALS) or _has_multi_concrete_goal(text):
         return "simple_route"
+    if _looks_like_nearby_single_goal(text):
+        return "single_poi"
     if _contains_any(text, COMPLEX_ROUTE_SIGNALS):
         return intent
     if _contains_any(text, SINGLE_POI_SIGNALS) and intent == "complex_route":
@@ -135,12 +138,12 @@ def _local_intent_result(intent_type, reason, provider="deterministic_gate"):
 def _high_confidence_intent_gate(goal_text):
     """明确短意图先走本地门控，减少外部模型延迟。"""
     text = goal_text.lower()
-    if _looks_like_nearby_single_goal(text):
-        return _local_intent_result("single_poi", "本地意图门控：附近单点/短列表需求")
     if _contains_any(text, STRONG_COMPLEX_ROUTE_SIGNALS):
         return _local_intent_result("complex_route", "本地意图门控：完整路线信号")
     if _contains_any(text, SEQUENCE_SIGNALS) or _has_multi_concrete_goal(text):
         return _local_intent_result("simple_route", "本地意图门控：顺序/连接信号")
+    if _looks_like_nearby_single_goal(text):
+        return _local_intent_result("single_poi", "本地意图门控：附近单点/短列表需求")
     if _contains_any(text, COMPLEX_ROUTE_SIGNALS):
         return _local_intent_result("complex_route", "本地意图门控：完整路线信号")
     if _contains_any(text, SINGLE_POI_SIGNALS):
@@ -149,7 +152,7 @@ def _high_confidence_intent_gate(goal_text):
 
 
 def _has_intent_llm_provider():
-    return bool(MIMO_API_KEY or MINIMAX_API_KEY or GLM_API_KEY)
+    return bool(DEEPSEEK_API_KEY or MIMO_API_KEY or MINIMAX_API_KEY or GLM_API_KEY)
 
 
 def _intent_provider_available(provider):
@@ -177,13 +180,17 @@ def _intent_classification_payload(intent_type, reason, llm_used, provider, raw_
 def _classify_intent_locally(goal_text):
     """LLM 不可用时的本地语义兜底，避免服务不可用。"""
     text = goal_text.lower()
-    if _looks_like_nearby_single_goal(text):
-        return _local_intent_result("single_poi", "本地语义兜底：附近单点/短列表需求", "local_semantic_guardrail")
-    
+
     # complex_route 的强信号
     for s in STRONG_COMPLEX_ROUTE_SIGNALS:
         if s in text:
             return _local_intent_result("complex_route", f"本地语义兜底：包含'{s}'", "local_semantic_guardrail")
+
+    if _contains_any(text, SEQUENCE_SIGNALS) or _has_multi_concrete_goal(text):
+        return _local_intent_result("simple_route", "本地语义兜底：包含顺序词或多个地点", "local_semantic_guardrail")
+
+    if _looks_like_nearby_single_goal(text):
+        return _local_intent_result("single_poi", "本地语义兜底：附近单点/短列表需求", "local_semantic_guardrail")
 
     # 短查询通常是在找一个地点类型，不应在 LLM 不可用时硬扩成半日路线。
     if _contains_any(text, SINGLE_POI_SIGNALS) and not _contains_any(text, SEQUENCE_SIGNALS):
@@ -272,7 +279,7 @@ def _call_llm_api(url, api_key, model, system_prompt, user_prompt, timeout=15,
 def classify_intent_with_llm(goal_text):
     """
     调用大模型判断用户意图类型。
-    优先级：MiMo > MiniMax Coding Plan > GLM > 本地语义兜底
+    优先级：DeepSeek > MiMo > MiniMax Coding Plan > GLM > 本地语义兜底
     
     Returns:
         dict: {"intent_type": "single_poi|simple_route|complex_route", "reason": str, "llm_used": bool}
@@ -297,7 +304,36 @@ def classify_intent_with_llm(goal_text):
     
     llm_errors = {}
 
-    # 1. 优先尝试 MiMo
+    # 1. 优先尝试 DeepSeek
+    if DEEPSEEK_API_KEY:
+        if not _intent_provider_available("deepseek"):
+            llm_errors["DeepSeek"] = "temporarily skipped after recent failure"
+        else:
+            try:
+                result = _call_llm_api(
+                    DEEPSEEK_CHAT_URL, DEEPSEEK_API_KEY, DEEPSEEK_MODEL,
+                    system_prompt, goal_text,
+                    auth_type=DEEPSEEK_AUTH_TYPE,
+                    token_field="max_tokens",
+                    include_thinking=False,
+                )
+                intent = result.get("intent_type", "complex_route")
+                if intent not in ("single_poi", "simple_route", "complex_route"):
+                    intent = "complex_route"
+                guarded_intent = _deterministic_intent_guard(goal_text, intent)
+                if guarded_intent != intent:
+                    print(f"[LLM-Intent] DeepSeek -> {intent}, guard -> {guarded_intent}: {result.get('reason', '')}")
+                else:
+                    print(f"[LLM-Intent] DeepSeek -> {intent}: {result.get('reason', '')}")
+                return _intent_classification_payload(guarded_intent, result.get("reason", ""), True, "deepseek", intent)
+            except Exception as e:
+                print(f"[LLM-Intent] DeepSeek failed: {e}")
+                llm_errors["DeepSeek"] = str(e)
+                _mark_intent_provider_failure("deepseek")
+    else:
+        llm_errors["DeepSeek"] = "API key not configured"
+
+    # 2. DeepSeek 不可用时尝试 MiMo
     if MIMO_API_KEY:
         if not _intent_provider_available("mimo"):
             llm_errors["MiMo"] = "temporarily skipped after recent failure"
@@ -326,7 +362,7 @@ def classify_intent_with_llm(goal_text):
     else:
         llm_errors["MiMo"] = "API key not configured"
 
-    # 2. MiMo 失败时回退到 MiniMax Coding Plan
+    # 3. MiMo 失败时回退到 MiniMax Coding Plan
     if MINIMAX_API_KEY:
         if not _intent_provider_available("minimax"):
             llm_errors["MiniMax"] = "temporarily skipped after recent failure"
@@ -355,7 +391,7 @@ def classify_intent_with_llm(goal_text):
     else:
         llm_errors["MiniMax"] = "API key not configured"
 
-    # 3. MiniMax 失败时回退到 GLM
+    # 4. MiniMax 失败时回退到 GLM
     if GLM_API_KEY:
         if not _intent_provider_available("glm"):
             llm_errors["GLM"] = "temporarily skipped after recent failure"
@@ -384,7 +420,7 @@ def classify_intent_with_llm(goal_text):
     else:
         llm_errors["GLM"] = "API key not configured"
     
-    # 4. 所有 LLM 都失败时降级到本地语义兜底
+    # 5. 所有 LLM 都失败时降级到本地语义兜底
     result = fast_gate or _classify_intent_locally(goal_text)
     result["llm_used"] = False
     result["llm_error"] = "; ".join(f"{name}: {error}" for name, error in llm_errors.items())
@@ -395,6 +431,7 @@ def classify_intent_with_llm(goal_text):
 def _call_first_available_llm_json(system_prompt, user_prompt, timeout=15):
     errors = {}
     providers = [
+        ("deepseek", DEEPSEEK_API_KEY, DEEPSEEK_CHAT_URL, DEEPSEEK_MODEL, DEEPSEEK_AUTH_TYPE, "max_tokens", False),
         ("mimo", MIMO_API_KEY, MIMO_CHAT_URL, MIMO_MODEL, MIMO_AUTH_TYPE, "max_completion_tokens", True),
         ("minimax", MINIMAX_API_KEY, MINIMAX_CHAT_URL, MINIMAX_MODEL, MINIMAX_AUTH_TYPE, "max_tokens", False),
         ("glm", GLM_API_KEY, GLM_CHAT_URL, GLM_MODEL, GLM_AUTH_TYPE, "max_tokens", False),
@@ -485,8 +522,6 @@ def _llm_review_candidates(goal, ranked_items, constraints):
         "reviewed_count": len(top_items),
         "accepted_count": len(reviews),
     }
-
-random.seed(42)
 
 # ========== 用户意图解析 ==========
 
@@ -582,10 +617,83 @@ def _stay_minutes(real_type, constraints, variant_name=None, variant=None):
 def _category_limit(cat, constraints):
     limits = dict(CATEGORY_LIMITS)
     limits.update(_mode_config(constraints).get("category_limits", {}))
-    return limits.get(cat, 999)
+    limit = limits.get(cat, 999)
+    if _explicit_category_requested(cat, constraints):
+        return max(limit, 1)
+    return limit
+
+
+def _explicit_request_tags(constraints):
+    tags = []
+    for tag in constraints.get("sequence") or []:
+        if tag not in tags:
+            tags.append(tag)
+    for tag in constraints.get("preferred_tags") or []:
+        if tag not in tags:
+            tags.append(tag)
+    return tags
+
+
+def _explicit_type_requested(real_type, constraints):
+    return any(_type_matches(real_type, tag) for tag in _explicit_request_tags(constraints))
+
+
+def _explicit_category_requested(cat, constraints):
+    if not cat or cat == "其他":
+        return False
+    for tag in _explicit_request_tags(constraints):
+        if tag == cat:
+            return True
+        if tag in TYPE_CATEGORIES and tag == cat:
+            return True
+        if tag in TYPE_CATEGORIES and cat == tag:
+            return True
+        if _get_category(tag) == cat:
+            return True
+    return False
+
+
+def _route_required_targets(constraints):
+    sequence = list(constraints.get("sequence") or [])
+    if len(sequence) >= 2:
+        return sequence
+    tags = list(constraints.get("preferred_tags") or [])
+    requested_categories = []
+    concrete_targets = []
+    required = list(sequence)
+    for tag in tags:
+        if tag in TYPE_CATEGORIES:
+            if tag not in requested_categories and tag not in required:
+                requested_categories.append(tag)
+            continue
+        cat = _get_category(tag)
+        if cat != "其他" and tag not in concrete_targets:
+            concrete_targets.append(tag)
+    required.extend(requested_categories)
+    for tag in concrete_targets:
+        cat = _get_category(tag)
+        if cat not in requested_categories and cat not in required and tag not in required:
+            required.append(tag)
+    return required
+
+
+def _requested_scope_radius(requested_radius, mode_cfg, constraints):
+    requested_radius = int(requested_radius)
+    mode_radius = int(mode_cfg.get("radius_m", requested_radius))
+    budget_min = float(constraints.get("time_budget_hours", 3) or 3) * 60
+    explicit_tags = _explicit_request_tags(constraints)
+    explicit_categories = {_get_category(tag) for tag in explicit_tags}
+    has_outing_target = any(cat in explicit_categories for cat in ("景点", "购物", "休闲"))
+    has_route_signal = bool(constraints.get("sequence")) or constraints.get("intent_type") == "complex_route"
+    if budget_min >= 180 or has_outing_target or has_route_signal:
+        expanded = 5000 if "超市" in explicit_tags else (3500 if any(tag in ("商场", "购物") for tag in explicit_tags) else 3000)
+        return min(max(requested_radius, expanded), max(mode_radius, expanded))
+    return min(requested_radius, mode_radius)
 
 
 def _is_excluded_by_mode(real_type, constraints):
+    if _explicit_type_requested(real_type, constraints):
+        return False
     if real_type in _mode_config(constraints).get("exclude_types", set()):
         return True
     for tag in constraints.get("avoid_tags", []):
@@ -660,6 +768,11 @@ RESTAURANT_NAME_TERMS = ["餐厅", "餐馆", "菜馆", "川菜", "家常菜", "�
 RESTAURANT_BAD_TERMS = ["会展", "博览", "展览", "西博会", "酒店", "宾馆", "住宿", "宴会厅", "会议中心"]
 SUPERMARKET_TERMS = ["超市", "卖场", "仓储", "生鲜", "菜市场", "农贸市场", "菜市", "G-Super", "永辉", "沃尔玛", "盒马", "家乐福"]
 SUPERMARKET_FALSE_TERMS = ["公园", "景区", "酒店", "住宿", "公司", "批发公司", "服饰", "美妆", "珠宝", "箱包", "专柜", "小商品", "SAINT LAURENT", "PARIS"]
+SUPERMARKET_EMBEDDED_STORE_TERMS = [
+    "煲仔饭", "米线", "小面", "面馆", "粉", "锅魁", "炸鸡", "鸡排", "饭", "餐", "奶茶",
+    "咖啡", "甜品", "服饰", "内衣", "鞋", "美甲", "化妆", "数码", "手机",
+]
+SUPERMARKET_EMBEDDED_RAW_TYPES = ["餐饮服务", "服装鞋帽皮具店", "专卖店", "文化用品店", "冷饮店", "甜品店"]
 MARKET_TERMS = ["菜市场", "农贸市场", "菜市", "生鲜"]
 
 HOTPOT_FULL_SERVICE_TERMS = ["老火锅", "火锅店", "火锅(", "火锅（", "市井火锅", "传统火锅", "牛肉火锅"]
@@ -745,11 +858,34 @@ def _looks_like_restaurant_entity(poi, real_type=None):
     return _has_any_keyword(name, RESTAURANT_NAME_TERMS)
 
 
+NON_FOOD_ENTITY_TERMS = [
+    "美容", "美白", "面膜", "护肤", "美妆", "化妆", "美甲", "美发", "理发", "体验店",
+    "樊文花", "兰蔻", "迪奥", "资生堂", "欧莱雅", "雅诗兰黛", "SK-II", "sk-ii",
+]
+
+
+def _looks_like_non_food_entity(poi):
+    text = poi.get("name", "") + " " + poi.get("type", "")
+    return _has_any_keyword(text, NON_FOOD_ENTITY_TERMS)
+
+
 def _looks_like_supermarket(poi):
     name = poi.get("name", "")
     raw_type = poi.get("type", "")
     if _has_any_keyword(name, SUPERMARKET_FALSE_TERMS):
         return False
+    if _is_supermarket_raw_type(raw_type):
+        return True
+    base_name = re.split(r"[（(]", name or "")[0].strip(" .·")
+    supermarket_name_hit = _has_any_keyword(name, SUPERMARKET_TERMS)
+    base_supermarket_hit = _has_any_keyword(base_name, SUPERMARKET_TERMS)
+    if supermarket_name_hit and not base_supermarket_hit:
+        if (
+            _is_restaurant_raw_type(raw_type)
+            or _has_any_keyword(raw_type, SUPERMARKET_EMBEDDED_RAW_TYPES)
+            or _has_any_keyword(base_name, SUPERMARKET_EMBEDDED_STORE_TERMS)
+        ):
+            return False
     return _has_any_keyword(name, SUPERMARKET_TERMS) or _is_supermarket_raw_type(raw_type)
 
 
@@ -761,6 +897,15 @@ def _looks_like_market_for_grocery(poi):
 def _correct_candidate_type(poi, real_type):
     name = poi.get("name", "")
     raw_type = poi.get("type", "")
+    if real_type == "超市" and not _looks_like_supermarket(poi):
+        if _is_restaurant_raw_type(raw_type) or _has_any_keyword(name, SUPERMARKET_EMBEDDED_STORE_TERMS):
+            if any(term in name for term in ("粉", "面", "锅魁", "小吃", "炸鸡", "鸡排")):
+                return "小吃"
+            return "中餐"
+        if _has_any_keyword(raw_type, ["服装鞋帽皮具店"]):
+            return "服饰"
+        if _has_any_keyword(raw_type, ["专卖店", "购物相关场所"]):
+            return "购物"
     if real_type in ("景点", "其他") and _looks_like_real_park(poi):
         return "公园"
     if real_type == "公园" and not _looks_like_real_park(poi):
@@ -775,6 +920,8 @@ def _correct_candidate_type(poi, real_type):
             return "住宿"
         if _has_any_keyword(name, ["会展", "博览", "西博会"]):
             return "其他"
+    if real_type in ("火锅", "烧烤", "中餐", "小吃", "甜品", "饮品", "外国菜", "农家菜") and _looks_like_non_food_entity(poi):
+        return "美妆"
     if real_type == "茶馆":
         if _text_contains_any(name, TEAHOUSE_BEVERAGE_TERMS) or any(term in raw_type for term in ("冷饮店", "甜品店")):
             return "饮品"
@@ -1027,6 +1174,14 @@ def _generic_entity_adjustment(poi, real_type, constraints=None):
             else:
                 adjustment -= 0.8
                 signals.append("generic_supermarket_for_grocery")
+        if _looks_like_supermarket(poi):
+            adjustment += 1.2
+            signals.append("supermarket_entity")
+            reason = reason or "名称/原始类型匹配超市或生鲜采购场景"
+        else:
+            adjustment -= 2.5
+            signals.append("weak_supermarket_entity")
+            reason = reason or "超市实体特征较弱"
     elif real_type == "中餐":
         if _looks_like_restaurant_entity(poi, real_type):
             adjustment += 0.9
@@ -1048,16 +1203,6 @@ def _generic_entity_adjustment(poi, real_type, constraints=None):
             adjustment -= 3.5
             signals.append("mall_inner_shop")
             reason = "名称更像商场内普通店铺，降低商场候选优先级"
-    elif real_type == "超市":
-        if _looks_like_supermarket(poi):
-            adjustment += 1.2
-            signals.append("supermarket_entity")
-            reason = "名称/原始类型匹配超市或生鲜采购场景"
-        else:
-            adjustment -= 2.5
-            signals.append("weak_supermarket_entity")
-            reason = "超市实体特征较弱"
-
     return adjustment, signals, reason
 
 
@@ -1146,17 +1291,31 @@ def _route_feasibility_policy(constraints, variant_name=None):
     intent_type = constraints.get("intent_type", "complex_route")
     mode_cfg = _mode_config(constraints)
     configured_segment = float(constraints.get("max_travel_min") or mode_cfg.get("max_travel_min", 30))
+    explicit_categories = {_get_category(tag) for tag in _explicit_request_tags(constraints)}
+    has_outing_target = any(cat in explicit_categories for cat in ("景点", "购物", "休闲"))
+    has_explicit_sequence_targets = len(_route_required_targets(constraints)) >= 2
 
     if intent_type == "simple_route":
-        configured_segment = min(configured_segment, max(12, budget_min * 0.22))
+        configured_segment = min(configured_segment, max(12, budget_min * 0.24))
     elif variant_name == "efficient":
         configured_segment = min(configured_segment, 24)
+    if budget_min >= 180 or (has_outing_target and budget_min >= 120):
+        configured_segment = max(configured_segment, min(30, budget_min * 0.16))
+    if has_explicit_sequence_targets and has_outing_target and budget_min >= 120:
+        configured_segment = max(configured_segment, min(28, budget_min * 0.22))
 
     share_by_mode = {"business": 0.26, "resident": 0.34, "tourist": 0.38}
     cap_by_mode = {"business": 24, "resident": 55, "tourist": 95}
+    if user_mode == "business" and (budget_min >= 180 or has_outing_target):
+        share_by_mode = dict(share_by_mode)
+        cap_by_mode = dict(cap_by_mode)
+        share_by_mode["business"] = 0.34
+        cap_by_mode["business"] = 55
     move_share = share_by_mode.get(user_mode, 0.35)
     if intent_type == "simple_route":
         move_share = min(move_share, 0.32)
+        if has_explicit_sequence_targets and has_outing_target and budget_min >= 120:
+            move_share = max(move_share, 0.36)
     if variant_name == "efficient":
         move_share = min(move_share, 0.32)
     if budget_min <= 90:
@@ -1562,14 +1721,19 @@ def parse_goal(goal_text):
     # 出行方式
     if re.search(GOAL_PATTERNS["mode_walk"], goal_lower):
         mode = "walk"
+        mode_source = "explicit"
     elif re.search(GOAL_PATTERNS["mode_bike"], goal_lower):
         mode = "bike"
+        mode_source = "explicit"
     elif re.search(GOAL_PATTERNS["mode_drive"], goal_lower):
         mode = "drive"
+        mode_source = "explicit"
     elif re.search(GOAL_PATTERNS["mode_bus"], goal_lower):
         mode = "bus"
+        mode_source = "explicit"
     else:
         mode = "walk"
+        mode_source = "default"
 
     # 偏好标签（v3修复："逛公园"优先解析为公园而不是购物）
     preferred = []
@@ -1740,6 +1904,7 @@ def parse_goal(goal_text):
         "time_budget_hours": hours,
         "time_budget_source": time_budget_source,
         "mode": mode,
+        "mode_source": mode_source,
         "preferred_tags": preferred,
         "must_visit": [],
         "avoid_tags": [],
@@ -2112,7 +2277,7 @@ def _model_metadata(intent_result, constraints, trace, semantic_poi_ids=None):
     return {
         "planner_version": PLANNER_VERSION,
         "ranking_model": RANKING_MODEL_VERSION,
-        "strategy": "feature-weighted constraint planner",
+        "strategy": "multi-generator listwise route planner",
         "intent": {
             "type": constraints.get("intent_type"),
             "provider": constraints.get("intent_provider", "local_semantic_guardrail"),
@@ -2136,6 +2301,8 @@ def _model_metadata(intent_result, constraints, trace, semantic_poi_ids=None):
             "session_and_user_profile",
             "route_diversity_constraints",
             "route_feasibility_constraints",
+            "listwise_route_slate_evaluator",
+            "llm_route_review",
         ],
         "candidate_pipeline": trace,
         "semantic": {
@@ -2214,9 +2381,529 @@ def _filter_candidates_spatial(poi_dict, spatial_index, center_lng, center_lat, 
     return candidates
 
 
+def _route_required_type_coverage(route, constraints, type_index):
+    required = _route_required_targets(constraints)
+    if not required:
+        return 1.0, []
+    matched = []
+    for expected in required:
+        if any(
+            _sequence_type_matches(
+                _correct_candidate_type(poi, type_index.get(poi["poi_id"], "其他") if type_index else "其他"),
+                expected,
+            )
+            for poi in route
+        ):
+            matched.append(expected)
+    return len(matched) / max(len(required), 1), matched
+
+
+def _route_quality_features(route, gt_data, constraints, type_index, metrics, semantic_poi_ids=None):
+    if not route:
+        return {
+            "poi_quality_avg": 0.0,
+            "review_heat_avg": 0.0,
+            "intent_coverage": 0.0,
+            "category_diversity": 0.0,
+            "concrete_diversity": 0.0,
+            "semantic_hit_rate": 0.0,
+            "route_compactness": 0.0,
+            "move_budget_margin": 0.0,
+            "schedule_fill": 0.0,
+            "low_value_count": 0,
+        }
+    qualities = []
+    heats = []
+    cats = []
+    concrete_types = []
+    low_value_count = 0
+    semantic_hits = 0
+    for poi in route:
+        pid = poi["poi_id"]
+        rt = _correct_candidate_type(poi, type_index.get(pid, "其他") if type_index else "其他")
+        cat = _get_category(rt)
+        gt = gt_data.get(pid, {}) or {}
+        quality = float(gt.get("overall", 3.0) or 3.0)
+        review_count, _, _ = _estimated_review_signal(poi, rt, quality)
+        qualities.append(quality)
+        heats.append(min(1.0, math.log1p(max(review_count, 0)) / math.log1p(500)))
+        cats.append(cat)
+        concrete_types.append(rt)
+        if _is_route_low_value(poi, rt, constraints) or _is_junk_candidate(poi, rt):
+            low_value_count += 1
+        if semantic_poi_ids and pid in semantic_poi_ids:
+            semantic_hits += 1
+
+    coverage, matched_required = _route_required_type_coverage(route, constraints, type_index)
+    total_stay = sum(_stay_minutes(rt, constraints, variant_name=None) for rt in concrete_types)
+    total_time = total_stay + float((metrics or {}).get("total_move_time_min") or 0)
+    budget_min = max(float(constraints.get("time_budget_hours", 3) or 3) * 60, 1)
+    move_policy = (metrics or {}).get("policy", {})
+    move_cap = float(move_policy.get("max_total_move_time_min") or max(budget_min * 0.35, 1))
+    move_time = float((metrics or {}).get("total_move_time_min") or 0)
+    return {
+        "poi_quality_avg": _round_feature(sum(qualities) / max(len(qualities), 1)),
+        "review_heat_avg": _round_feature(sum(heats) / max(len(heats), 1)),
+        "intent_coverage": _round_feature(coverage),
+        "matched_required": matched_required,
+        "category_diversity": _round_feature(len(set(cats)) / max(len(cats), 1)),
+        "concrete_diversity": _round_feature(len(set(concrete_types)) / max(len(concrete_types), 1)),
+        "semantic_hit_rate": _round_feature(semantic_hits / max(len(route), 1)),
+        "route_compactness": _round_feature((metrics or {}).get("compactness", 0)),
+        "move_budget_margin": _round_feature(max(0.0, 1.0 - move_time / max(move_cap, 1))),
+        "schedule_fill": _round_feature(min(1.0, total_time / budget_min)),
+        "low_value_count": low_value_count,
+        "poi_count": len(route),
+        "concrete_types": concrete_types,
+        "categories": cats,
+    }
+
+
+def _score_route_slate_candidate(route, gt_data, constraints, type_index, metrics, semantic_poi_ids=None,
+                                 generator_name=None, llm_review=None):
+    features = _route_quality_features(route, gt_data, constraints, type_index, metrics, semantic_poi_ids)
+    score = 0.0
+    score += features["poi_quality_avg"] * 1.4
+    score += features["review_heat_avg"] * 1.0
+    # Explicit user targets are a hard product expectation: quality and compactness
+    # can only break ties after the route covers what the user asked for.
+    score += features["intent_coverage"] * 9.0
+    if _route_required_targets(constraints) and features["intent_coverage"] < 1.0:
+        score -= (1.0 - features["intent_coverage"]) * 6.0
+    score += features["category_diversity"] * 0.9
+    score += features["concrete_diversity"] * 0.8
+    score += features["semantic_hit_rate"] * 1.0
+    score += features["route_compactness"] * 1.1
+    score += features["move_budget_margin"] * 1.0
+    score += features["schedule_fill"] * 0.35
+    score -= features["low_value_count"] * 3.0
+    if metrics and not metrics.get("feasible", True):
+        score -= 20.0
+    if llm_review:
+        score += float(llm_review.get("bonus", 0.0) or 0.0)
+        features["llm_route_review_bonus"] = _round_feature(llm_review.get("bonus", 0.0))
+        features["llm_route_review_reason"] = llm_review.get("reason", "")
+    features["generator"] = generator_name
+    return score, features
+
+
+def _clone_route_with_context(route):
+    cloned = []
+    for poi in route:
+        copied = dict(poi)
+        if isinstance(poi.get("_route_rank_context"), dict):
+            copied["_route_rank_context"] = dict(poi["_route_rank_context"])
+        cloned.append(copied)
+    return cloned
+
+
+def _route_signature(route):
+    return tuple(poi.get("poi_id") for poi in route)
+
+
+def _sequence_order_satisfied(route, constraints, type_index):
+    sequence = constraints.get("sequence") or []
+    if len(sequence) < 2:
+        return True
+    pos = 0
+    for poi in route:
+        rt = type_index.get(poi["poi_id"], "其他") if type_index else "其他"
+        rt = _correct_candidate_type(poi, rt)
+        if pos < len(sequence) and _sequence_type_matches(rt, sequence[pos]):
+            pos += 1
+    return pos >= len(sequence)
+
+
+def _sequence_reorder_allowed(constraints):
+    text = constraints.get("raw_goal", "") or ""
+    weak_connectors = ("顺便", "同时", "一起", "和", "并且", "也想")
+    strict_connectors = ("先", "吃完", "逛完", "玩完", "看完", "去完", "最后", "然后", "再去", "接着", "之后")
+    if any(term in text for term in weak_connectors):
+        return True
+    return not any(term in text for term in strict_connectors)
+
+
+def _candidate_replacement_pool(route, candidates, gt_data, constraints, type_index, limit):
+    used = {poi["poi_id"] for poi in route}
+    route_types = {type_index.get(poi["poi_id"], "其他") if type_index else "其他" for poi in route}
+    scored = []
+    for poi in candidates:
+        if poi["poi_id"] in used:
+            continue
+        rt = type_index.get(poi["poi_id"], "其他") if type_index else "其他"
+        if _is_excluded_by_mode(rt, constraints) or _is_route_low_value(poi, rt, constraints):
+            continue
+        score, _, _, _ = _score_poi_features(poi, gt_data.get(poi["poi_id"], {}), constraints, route_types, None, type_index)
+        scored.append((score, poi))
+    scored.sort(key=lambda item: -item[0])
+    return [poi for _, poi in scored[:max(1, limit)]]
+
+
+def _top_candidates_for_expected_type(candidates, gt_data, constraints, type_index, expected, limit, route_types=None,
+                                      center_lng=None, center_lat=None, network=None, mode=None, hours_map=None):
+    scored = []
+    route_types = route_types or set()
+    for poi in candidates:
+        rt = type_index.get(poi["poi_id"], "其他") if type_index else "其他"
+        rt = _correct_candidate_type(poi, rt)
+        if not _sequence_type_matches(rt, expected):
+            continue
+        if _is_excluded_by_mode(rt, constraints) or _is_route_low_value(poi, rt, constraints):
+            continue
+        score, _, _, _ = _score_poi_features(poi, gt_data.get(poi["poi_id"], {}), constraints, route_types, None, type_index)
+        if center_lng is not None and center_lat is not None:
+            if network is not None:
+                dist_m, time_min, _, _ = _route_from_location_to_poi(
+                    network, center_lng, center_lat, poi, mode or constraints.get("mode", "walk")
+                )
+            else:
+                dist_m = _straight_distance_m(center_lng, center_lat, poi["longitude"], poi["latitude"])
+                time_min = _travel_time_from_distance(dist_m, mode or constraints.get("mode", "walk"))
+            score -= min(3.0, float(time_min or 0) / 14.0)
+            score -= min(2.5, float(dist_m or 0) / 3200.0)
+        if hours_map is not None:
+            start_time = constraints.get("start_time", "09:00")
+            if is_open_at(poi["poi_id"], start_time, hours_map):
+                score += 0.25
+            else:
+                score -= 0.4
+        scored.append((score, poi))
+    scored.sort(key=lambda item: -item[0])
+    return [poi for _, poi in scored[:max(1, limit)]]
+
+
+def _generate_sequence_route_candidates(base_route, candidates, gt_data, constraints, type_index, limit_per_type=5):
+    sequence = _route_required_targets(constraints)
+    if not sequence:
+        return []
+    pools = []
+    route_types = set()
+    for expected in sequence:
+        pool = _top_candidates_for_expected_type(
+            candidates, gt_data, constraints, type_index, expected, limit_per_type, route_types
+        )
+        if not pool:
+            return []
+        pools.append(pool)
+    generated = []
+    seen = set()
+
+    def _add(route):
+        signature = _route_signature(route)
+        if signature not in seen:
+            generated.append(route)
+            seen.add(signature)
+
+    primary = []
+    used = set()
+    for pool in pools:
+        chosen = None
+        for poi in pool:
+            if poi["poi_id"] not in used:
+                chosen = poi
+                break
+        if chosen is None:
+            return generated
+        primary.append(chosen)
+        used.add(chosen["poi_id"])
+    _add(primary)
+
+    for pos, pool in enumerate(pools):
+        for candidate in pool[1:limit_per_type]:
+            if candidate["poi_id"] in {poi["poi_id"] for i, poi in enumerate(primary) if i != pos}:
+                continue
+            trial = list(primary)
+            trial[pos] = candidate
+            _add(trial)
+
+    if len(base_route) > len(sequence):
+        extras = [
+            poi for poi in base_route
+            if poi["poi_id"] not in {selected["poi_id"] for selected in primary}
+        ]
+        if extras:
+            _add(primary + extras[:max(0, len(base_route) - len(primary))])
+    return generated
+
+
+def _build_sequence_first_route(candidates, gt_data, constraints, hours_map, network, knn_graph, variant_name, type_index):
+    sequence = _route_required_targets(constraints)
+    if not sequence:
+        return []
+    mode = constraints.get("mode", "walk")
+    route_policy = _route_feasibility_policy(constraints, variant_name)
+    center_lng = constraints.get("center_lng", DEFAULT_CENTER_LNG)
+    center_lat = constraints.get("center_lat", DEFAULT_CENTER_LAT)
+    current_time = datetime.strptime(constraints.get("start_time", "09:00"), "%H:%M")
+    cumulative_move_time = 0.0
+    cumulative_move_distance = 0.0
+    route = []
+    used = set()
+    route_types = set()
+    for expected in sequence:
+        pool = _top_candidates_for_expected_type(
+            candidates, gt_data, constraints, type_index, expected, 40, route_types
+        )
+        scored = []
+        for poi in pool:
+            if poi["poi_id"] in used:
+                continue
+            rt = type_index.get(poi["poi_id"], "其他") if type_index else "其他"
+            if route:
+                dist_m, time_min, _ = _route_between_pois(network, knn_graph, route[-1], poi, mode)
+                if dist_m is None:
+                    continue
+                direct_m = _straight_distance_m(
+                    route[-1]["longitude"], route[-1]["latitude"], poi["longitude"], poi["latitude"]
+                )
+            else:
+                dist_m, time_min, _, _ = _route_from_location_to_poi(network, center_lng, center_lat, poi, mode)
+                if dist_m is None:
+                    continue
+                direct_m = _straight_distance_m(center_lng, center_lat, poi["longitude"], poi["latitude"])
+            feasible, feasibility_detail = _segment_route_feasible(
+                dist_m, time_min, direct_m, route_policy, cumulative_move_time, cumulative_move_distance
+            )
+            if not feasible:
+                continue
+            arrival_str = (current_time + timedelta(minutes=time_min)).strftime("%H:%M")
+            if not is_open_at(poi["poi_id"], arrival_str, hours_map):
+                continue
+            base_score, features, reasons, _ = _score_poi_features(
+                poi, gt_data.get(poi["poi_id"], {}), constraints, route_types, network, type_index
+            )
+            mobility_penalty = _route_mobility_penalty(
+                time_min, dist_m, direct_m, route_policy, cumulative_move_time, cumulative_move_distance
+            )
+            dist_to_center = _straight_distance_m(center_lng, center_lat, poi["longitude"], poi["latitude"])
+            score = base_score + mobility_penalty - dist_to_center / 1800
+            scored.append((score, poi, dist_m, time_min, feasibility_detail, features, reasons))
+        scored.sort(key=lambda item: -item[0])
+        if not scored:
+            return []
+        score, poi, dist_m, time_min, feasibility_detail, features, reasons = scored[0]
+        poi = dict(poi)
+        poi["_route_rank_context"] = {
+            "variant": variant_name,
+            "rank_score": round(score, 3),
+            "semantic_boost": 0.0,
+            "variant_bonus": 0.0,
+            "sequence_boost": 50.0,
+            "distance_penalty": 0.0,
+            "sequence_first": True,
+            "route_feasibility": feasibility_detail,
+        }
+        route.append(poi)
+        used.add(poi["poi_id"])
+        rt = type_index.get(poi["poi_id"], "其他") if type_index else "其他"
+        route_types.add(rt)
+        stay = _stay_minutes(rt, constraints, variant_name=variant_name)
+        cumulative_move_distance += float(dist_m or 0)
+        cumulative_move_time += float(time_min or 0)
+        current_time += timedelta(minutes=time_min + stay)
+    if not _sequence_order_satisfied(route, constraints, type_index):
+        return []
+    metrics = _route_sequence_metrics(route, constraints, network, knn_graph, variant_name)
+    if not metrics.get("feasible"):
+        return []
+    return route
+
+
+def _generate_route_slate(base_route, candidates, gt_data, constraints, network, variant_name,
+                          type_index=None, knn_graph=None, semantic_poi_ids=None, min_pois=None):
+    slate = []
+    seen = set()
+    min_pois = max(1, int(min_pois or VARIANTS.get(variant_name, {}).get("min_pois", 1)))
+
+    def _add(route, generator_name):
+        if not route:
+            return
+        if len(route) < min_pois:
+            return
+        signature = _route_signature(route)
+        if signature in seen:
+            return
+        metrics = _route_sequence_metrics(route, constraints, network, knn_graph, variant_name)
+        if not metrics.get("feasible"):
+            return
+        if not _sequence_order_satisfied(route, constraints, type_index):
+            return
+        score, features = _score_route_slate_candidate(
+            route, gt_data, constraints, type_index, metrics, semantic_poi_ids, generator_name
+        )
+        slate.append({
+            "route": _clone_route_with_context(route),
+            "generator": generator_name,
+            "score": score,
+            "features": features,
+            "metrics": metrics,
+        })
+        seen.add(signature)
+
+    _add(base_route, "base_greedy")
+    for idx, route in enumerate(_generate_sequence_route_candidates(base_route, candidates, gt_data, constraints, type_index), start=1):
+        _add(route, "sequence_direct_{}".format(idx))
+    if len(base_route) >= 3:
+        _add([base_route[0]] + list(reversed(base_route[1:])), "reverse_tail")
+        compact = sorted(
+            base_route,
+            key=lambda poi: _straight_distance_m(
+                constraints.get("center_lng", DEFAULT_CENTER_LNG),
+                constraints.get("center_lat", DEFAULT_CENTER_LAT),
+                poi["longitude"],
+                poi["latitude"],
+            ),
+        )
+        _add(compact, "center_compact")
+
+    replacement_pool = _candidate_replacement_pool(
+        base_route, candidates, gt_data, constraints, type_index, ROUTE_SLATE_REPLACEMENT_TOP_N
+    )
+    for idx in range(len(base_route)):
+        original = base_route[idx]
+        original_type = type_index.get(original["poi_id"], "其他") if type_index else "其他"
+        for repl in replacement_pool:
+            repl_type = type_index.get(repl["poi_id"], "其他") if type_index else "其他"
+            if idx < len(constraints.get("sequence") or []):
+                expected = constraints["sequence"][idx]
+                if not _sequence_type_matches(repl_type, expected):
+                    continue
+            elif _get_category(repl_type) != _get_category(original_type) and len(base_route) <= 3:
+                continue
+            trial = list(base_route)
+            trial[idx] = repl
+            _add(trial, "single_replace_{}".format(idx + 1))
+            if len(slate) >= ROUTE_SLATE_MAX_CANDIDATES:
+                break
+        if len(slate) >= ROUTE_SLATE_MAX_CANDIDATES:
+            break
+
+    slate.sort(key=lambda item: -item["score"])
+    return slate[:max(1, ROUTE_SLATE_MAX_CANDIDATES)]
+
+
+def _call_llm_route_review(goal, slate, constraints, type_index):
+    if not ENABLE_LLM_ROUTE_REVIEW or not slate:
+        return {}, {"enabled": False, "used": False, "reason": "disabled_or_empty"}
+    top_slate = slate[:max(1, LLM_ROUTE_REVIEW_TOP_N)]
+    payload_items = []
+    for i, item in enumerate(top_slate, start=1):
+        route_desc = []
+        for poi in item["route"]:
+            pid = poi["poi_id"]
+            route_desc.append({
+                "poi_id": pid,
+                "name": poi.get("name"),
+                "type": type_index.get(pid, "其他") if type_index else "其他",
+            })
+        payload_items.append({
+            "route_id": "route_{}".format(i),
+            "generator": item.get("generator"),
+            "score": round(item.get("score", 0), 3),
+            "features": item.get("features", {}),
+            "route_feasibility": _public_route_feasibility(item.get("metrics", {})),
+            "route": route_desc,
+        })
+
+    system_prompt = (
+        "你是路线推荐系统的 listwise 评审器。只能在给定 route_id 之间重排，不能增加、删除或编造地点。"
+        "请综合用户目标、地点质量、热度、意图覆盖、多样性、营业可行性和路线紧凑度，判断哪条路线更适合。"
+        "必须只输出 JSON，格式为 {\"items\":[{\"route_id\":\"route_1\",\"bonus\":0到1之间数字,\"reason\":\"不超过40字\"}]}。"
+    )
+    user_prompt = json.dumps({
+        "goal": goal,
+        "intent_type": constraints.get("intent_type"),
+        "preferred_tags": constraints.get("preferred_tags", []),
+        "sequence": constraints.get("sequence", []),
+        "routes": payload_items,
+    }, ensure_ascii=False)
+    try:
+        provider, result = _call_first_available_llm_json(system_prompt, user_prompt, timeout=12)
+    except Exception as exc:
+        return {}, {"enabled": True, "used": False, "reason": "provider_unavailable", "error": str(exc)[:300]}
+
+    raw_items = result.get("items") if isinstance(result, dict) else None
+    if not isinstance(raw_items, list):
+        return {}, {"enabled": True, "used": False, "provider": provider, "reason": "invalid_response_shape"}
+    reviews = {}
+    valid_ids = {"route_{}".format(i) for i in range(1, len(top_slate) + 1)}
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        route_id = raw.get("route_id")
+        if route_id not in valid_ids:
+            continue
+        try:
+            bonus = float(raw.get("bonus", 0))
+        except (TypeError, ValueError):
+            bonus = 0.0
+        bonus = max(0.0, min(1.0, bonus)) * LLM_ROUTE_REVIEW_BONUS
+        reason = str(raw.get("reason") or "").strip()[:60]
+        if bonus > 0:
+            reviews[route_id] = {"bonus": bonus, "reason": reason}
+    return reviews, {
+        "enabled": True,
+        "used": bool(reviews),
+        "provider": provider,
+        "reviewed_count": len(top_slate),
+        "accepted_count": len(reviews),
+    }
+
+
+def _select_route_from_slate(goal, base_route, candidates, gt_data, constraints, network, variant_name,
+                             type_index=None, knn_graph=None, semantic_poi_ids=None, min_pois=None):
+    effective_min_pois = min_pois
+    if effective_min_pois is None and base_route:
+        effective_min_pois = len(base_route)
+    slate = _generate_route_slate(
+        base_route, candidates, gt_data, constraints, network, variant_name,
+        type_index=type_index, knn_graph=knn_graph, semantic_poi_ids=semantic_poi_ids, min_pois=effective_min_pois
+    )
+    llm_reviews, llm_trace = _call_llm_route_review(goal, slate, constraints, type_index)
+    for idx, item in enumerate(slate[:max(1, LLM_ROUTE_REVIEW_TOP_N)], start=1):
+        review = llm_reviews.get("route_{}".format(idx))
+        if not review:
+            continue
+        item["score"], item["features"] = _score_route_slate_candidate(
+            item["route"], gt_data, constraints, type_index, item["metrics"], semantic_poi_ids,
+            item["generator"], llm_review=review
+        )
+        item["llm_review"] = review
+    slate.sort(key=lambda item: -item["score"])
+    selected = slate[0] if slate else {
+        "route": base_route,
+        "generator": "base_greedy",
+        "score": 0.0,
+        "features": {},
+        "metrics": _route_sequence_metrics(base_route, constraints, network, knn_graph, variant_name),
+    }
+    for poi in selected["route"]:
+        context = poi.get("_route_rank_context")
+        if context is not None:
+            context["route_slate_generator"] = selected.get("generator")
+            context["route_slate_score"] = round(selected.get("score", 0), 3)
+    return selected["route"], {
+        "generated_count": len(slate),
+        "selected_generator": selected.get("generator"),
+        "selected_score": round(selected.get("score", 0), 3),
+        "selected_features": selected.get("features", {}),
+        "llm_route_review": llm_trace,
+        "top_candidates": [
+            {
+                "generator": item.get("generator"),
+                "score": round(item.get("score", 0), 3),
+                "poi_ids": [poi.get("poi_id") for poi in item.get("route", [])],
+                "features": item.get("features", {}),
+                "route_feasibility": _public_route_feasibility(item.get("metrics", {})),
+            }
+            for item in slate[:5]
+        ],
+    }
+
+
 def build_route_v3(pois_or_candidates, gt_data, constraints, hours_map, network, variant_name,
                    spatial_index=None, type_index=None, candidates=None, knn_graph=None,
-                   semantic_poi_ids=None, route_limits=None):
+                   semantic_poi_ids=None, route_limits=None, goal_text=None, trace=None):
     """构建单条路线。支持外部传入预筛选的candidates和KNN图，避免重复Dijkstra"""
     variant = dict(VARIANTS[variant_name])  # 复制一份，避免修改全局
     if route_limits:
@@ -2277,6 +2964,8 @@ def build_route_v3(pois_or_candidates, gt_data, constraints, hours_map, network,
     shopping_count = 0
     mode_cfg = _mode_config(constraints)
     max_shopping = mode_cfg.get("max_shopping", 2 if variant_name == "efficient" else 3)
+    if _explicit_category_requested("购物", constraints):
+        max_shopping = max(max_shopping, 1)
     max_travel_min = mode_cfg.get("max_travel_min", 30)
     route_policy = _route_feasibility_policy(constraints, variant_name)
     max_travel_min = min(max_travel_min, route_policy["max_segment_time_min"])
@@ -2295,6 +2984,30 @@ def build_route_v3(pois_or_candidates, gt_data, constraints, hours_map, network,
         open_candidates.append((s, p))
         if len(open_candidates) >= 120:
             break
+    if constraints.get("sequence"):
+        present_sequence_hits = set()
+        for _, p in open_candidates:
+            rt = type_index.get(p["poi_id"], "其他") if type_index else "其他"
+            for expected in constraints.get("sequence") or []:
+                if _sequence_type_matches(rt, expected):
+                    present_sequence_hits.add(expected)
+        open_ids = {p["poi_id"] for _, p in open_candidates}
+        for expected in constraints.get("sequence") or []:
+            if expected in present_sequence_hits:
+                continue
+            added = 0
+            for s, p in scored:
+                if p["poi_id"] in open_ids:
+                    continue
+                rt = type_index.get(p["poi_id"], "其他") if type_index else "其他"
+                if _is_excluded_by_mode(rt, constraints):
+                    continue
+                if _sequence_type_matches(rt, expected):
+                    open_candidates.append((s + 3.0, p))
+                    open_ids.add(p["poi_id"])
+                    added += 1
+                if added >= 20:
+                    break
 
     # 按变体偏好排序起点：优先选择变体偏好类型的POI
     # 获取用户起点坐标（用于距离惩罚）
@@ -2601,16 +3314,34 @@ def build_route_v3(pois_or_candidates, gt_data, constraints, hours_map, network,
         total_time += best_time + stay
 
     if len(route) < variant["min_pois"]:
-        print(f"[RouteFail] Route has {len(route)} POIs, but min_pois={variant['min_pois']}. Returning empty.")
-        for i, r in enumerate(route):
-            rt = type_index.get(r["poi_id"], "其他") if type_index else "其他"
-            print(f"  Route POI {i}: {r['name']} ({rt})")
-        return []
+        sequence_first_route = _build_sequence_first_route(
+            candidates, gt_data, constraints, hours_map, network, knn_graph, variant_name, type_index
+        )
+        if len(sequence_first_route) >= variant["min_pois"]:
+            print(f"[RouteBuild] variant={variant_name} using sequence-first route")
+            route = sequence_first_route
+            used = {poi["poi_id"] for poi in route}
+        else:
+            print(f"[RouteFail] Route has {len(route)} POIs, but min_pois={variant['min_pois']}. Returning empty.")
+            for i, r in enumerate(route):
+                rt = type_index.get(r["poi_id"], "其他") if type_index else "其他"
+                print(f"  Route POI {i}: {r['name']} ({rt})")
+            return []
     
     print(f"[RouteSuccess] Built route with {len(route)} POIs for variant={variant_name}")
 
     # 强制包含偏好类型：明确顺序优先，避免推导出的泛化偏好挤掉用户说出的 A -> B。
     sequence = constraints.get("sequence") or []
+    if sequence:
+        coverage_before, _ = _route_required_type_coverage(route, constraints, type_index)
+        if coverage_before < 1.0:
+            sequence_first_route = _build_sequence_first_route(
+                candidates, gt_data, constraints, hours_map, network, knn_graph, variant_name, type_index
+            )
+            if len(sequence_first_route) >= min(variant["min_pois"], len(sequence)):
+                print(f"[RouteBuild] variant={variant_name} replacing incomplete route with sequence-first coverage")
+                route = sequence_first_route
+                used = {poi["poi_id"] for poi in route}
     if preferred_concrete_types or sequence:
         required_types = set(sequence) if sequence else set(user_concrete_prefs)
         if not required_types:
@@ -2700,6 +3431,23 @@ def build_route_v3(pois_or_candidates, gt_data, constraints, hours_map, network,
                 if poi["poi_id"] not in used_ids:
                     ordered.append(poi)
             route = ordered[:len(route)]
+
+    route, slate_trace = _select_route_from_slate(
+        goal_text or constraints.get("raw_goal", ""),
+        route,
+        candidates,
+        gt_data,
+        constraints,
+        network,
+        variant_name,
+        type_index=type_index,
+        knn_graph=knn_graph,
+        semantic_poi_ids=semantic_poi_ids,
+        min_pois=variant["min_pois"],
+    )
+    if trace is not None:
+        route_slate_trace = trace.setdefault("route_slate_evaluator", {})
+        route_slate_trace[variant_name] = slate_trace
 
     final_metrics = _route_sequence_metrics(route, constraints, network, knn_graph, variant_name)
     if not final_metrics.get("feasible"):
@@ -2888,6 +3636,13 @@ def format_route_v3(route, constraints, gt_data, hours_map, network, variant_nam
 
     total_time = (current_time - start_time).total_seconds() / 60
     route_feasibility = _route_metrics_from_segments(segment_metrics, route_policy)
+    route_eval_metrics = _route_sequence_metrics(route, constraints, network, knn_graph, variant_name)
+    route_quality = _route_quality_features(route, gt_data, constraints, type_index, route_eval_metrics)
+    slate_scores = [
+        float((poi.get("_route_rank_context") or {}).get("route_slate_score", 0) or 0)
+        for poi in route
+    ]
+    model_score = max(slate_scores) if slate_scores else 0.0
     return {
         "variant_id": variant_name,
         "name": {"efficient": "紧凑高效", "relaxed": "休闲慢游", "food_first": "美食探店"}[variant_name],
@@ -2899,6 +3654,12 @@ def format_route_v3(route, constraints, gt_data, hours_map, network, variant_nam
         "time_utilization": round(total_time / (constraints["time_budget_hours"] * 60), 2),
         "start_location": {"lng": constraints.get("center_lng", DEFAULT_CENTER_LNG), "lat": constraints.get("center_lat", DEFAULT_CENTER_LAT)},
         "route_feasibility": _public_route_feasibility(route_feasibility),
+        "model_selection": {
+            "score": round(model_score, 3),
+            "intent_coverage": route_quality.get("intent_coverage", 0),
+            "route_compactness": route_quality.get("route_compactness", 0),
+            "matched_required": route_quality.get("matched_required", []),
+        },
         "route": steps,
     }
 
@@ -2926,17 +3687,13 @@ def build_plan_v3(goal, pois, gt_data, center_lng=DEFAULT_CENTER_LNG, center_lat
     network_path = _module_path(network_path)
     user_mode = normalize_user_mode(user_mode)
     mode_cfg = USER_MODES[user_mode]
-    effective_radius = min(int(radius), mode_cfg["radius_m"])
-    trace["effective_radius_m"] = effective_radius
     constraints = parse_goal(goal)
     constraints = apply_context_to_constraints(constraints, interaction_context)
     constraints["center_lng"] = center_lng
     constraints["center_lat"] = center_lat
-    constraints["radius"] = effective_radius
     constraints["requested_radius"] = radius
     constraints["user_mode"] = user_mode
     constraints["user_mode_label"] = mode_cfg["label"]
-    constraints["max_travel_min"] = mode_cfg["max_travel_min"]
     constraints["max_shopping"] = mode_cfg["max_shopping"]
 
     # 调用大模型判断用户意图复杂度
@@ -2960,6 +3717,17 @@ def build_plan_v3(goal, pois, gt_data, center_lng=DEFAULT_CENTER_LNG, center_lat
         constraints["raw_intent_type"] = intent_result["raw_intent_type"]
     if "llm_error" in intent_result:
         constraints["llm_error"] = intent_result["llm_error"]
+
+    effective_radius = _requested_scope_radius(radius, mode_cfg, constraints)
+    trace["effective_radius_m"] = effective_radius
+    constraints["radius"] = effective_radius
+    explicit_categories = {_get_category(tag) for tag in _explicit_request_tags(constraints)}
+    has_outing_target = any(cat in explicit_categories for cat in ("景点", "购物", "休闲"))
+    max_travel_min = mode_cfg["max_travel_min"]
+    budget_min = float(constraints.get("time_budget_hours", 3) or 3) * 60
+    if budget_min >= 180 or has_outing_target:
+        max_travel_min = max(max_travel_min, min(30, budget_min * 0.16))
+    constraints["max_travel_min"] = max_travel_min
 
     # 根据意图类型决定推荐策略（变体数量、POI 数量）
     if intent_type == "single_poi":
@@ -3004,6 +3772,10 @@ def build_plan_v3(goal, pois, gt_data, center_lng=DEFAULT_CENTER_LNG, center_lat
     # 例如"想吃火锅"只检查火锅的营业率，不因甜品未开门而推迟
     user_concrete_types = set()
     for tag in constraints["preferred_tags"]:
+        for types in TYPE_CATEGORIES.values():
+            if tag in types:
+                user_concrete_types.add(tag)
+    for tag in constraints.get("sequence") or []:
         for types in TYPE_CATEGORIES.values():
             if tag in types:
                 user_concrete_types.add(tag)
@@ -3154,6 +3926,53 @@ def build_plan_v3(goal, pois, gt_data, center_lng=DEFAULT_CENTER_LNG, center_lat
         final_candidates = []
         category_sel_counts = {}
         selected_ids = set()
+
+        def _reserve_candidate(p):
+            pid = p["poi_id"]
+            if pid in selected_ids:
+                return False
+            rt = type_index.get(pid, "其他") if type_index else "其他"
+            cat = _get_category(rt)
+            final_candidates.append(p)
+            selected_ids.add(pid)
+            category_sel_counts[cat] = category_sel_counts.get(cat, 0) + 1
+            return True
+
+        # 显式意图召回保底：用户已经说出的顺序/类型不能在候选池截断阶段被同大类高分 POI 挤掉。
+        explicit_targets = []
+        for target in constraints.get("sequence") or []:
+            if target not in explicit_targets:
+                explicit_targets.append(target)
+        for target in constraints.get("preferred_tags") or []:
+            if target not in explicit_targets and target not in TYPE_CATEGORIES:
+                explicit_targets.append(target)
+        for target in explicit_targets:
+            added = 0
+            quota = 24 if target in (constraints.get("sequence") or []) else 10
+            target_scored = []
+            for base_score, p in scored:
+                rt = type_index.get(p["poi_id"], "其他") if type_index else "其他"
+                rt = _correct_candidate_type(p, rt)
+                if not _sequence_type_matches(rt, target):
+                    continue
+                accessibility_score = base_score
+                if intent_type != "single_poi":
+                    dist_m, time_min, _, _ = _route_from_location_to_poi(
+                        network, center_lng, center_lat, p, constraints.get("mode", "walk")
+                    )
+                    accessibility_score -= min(4.0, float(time_min or 0) / 10.0)
+                    accessibility_score -= min(3.0, float(dist_m or 0) / 2600.0)
+                    if not is_open_at(p["poi_id"], constraints.get("start_time", "09:00"), hours_map):
+                        accessibility_score -= 0.6
+                target_scored.append((accessibility_score, p))
+            target_scored.sort(key=lambda item: -item[0])
+            for _s, p in target_scored:
+                if _reserve_candidate(p):
+                    added += 1
+                if added >= quota or len(final_candidates) >= CANDIDATE_POOL_SIZE:
+                    break
+            if len(final_candidates) >= CANDIDATE_POOL_SIZE:
+                break
         
         # 第一轮：按配额选取（优先高分）
         for s, p in scored:
@@ -3161,9 +3980,7 @@ def build_plan_v3(goal, pois, gt_data, center_lng=DEFAULT_CENTER_LNG, center_lat
             cat = _get_category(rt)
             quota = CATEGORY_QUOTA.get(cat, 20)
             if category_sel_counts.get(cat, 0) < quota and p["poi_id"] not in selected_ids:
-                final_candidates.append(p)
-                selected_ids.add(p["poi_id"])
-                category_sel_counts[cat] = category_sel_counts.get(cat, 0) + 1
+                _reserve_candidate(p)
         
         # 第二轮：填充到候选池上限（从剩余高分候选中补充）
         for s, p in scored:
@@ -3450,22 +4267,109 @@ def build_plan_v3(goal, pois, gt_data, center_lng=DEFAULT_CENTER_LNG, center_lat
         }
 
     variants = {}
-    for vname in variant_names:
-        route = build_route_v3(poi_dict, gt_data, constraints, hours_map, network, vname,
-                               spatial_index=spatial_index, type_index=type_index,
-                               candidates=candidates, knn_graph=knn_graph,
-                               semantic_poi_ids=semantic_poi_ids,
-                               route_limits=route_limits)
-        if route:
-            variants[vname] = format_route_v3(route, constraints, gt_data, hours_map, network, vname,
-                                              type_index=type_index, knn_graph=knn_graph)
+    mode_attempts = [constraints.get("mode", "walk")]
+    if constraints.get("mode_source") != "explicit" and intent_type != "single_poi":
+        for candidate_mode in ("bike",):
+            if candidate_mode not in mode_attempts:
+                mode_attempts.append(candidate_mode)
+    original_mode = constraints.get("mode", "walk")
+    original_max_travel_min = constraints.get("max_travel_min")
+    trace["mode_scheduler"] = {
+        "mode_source": constraints.get("mode_source", "default"),
+        "attempted": [],
+        "selected": original_mode,
+    }
+    best_attempt_variants = {}
+    best_attempt_mode = original_mode
+    best_attempt_max_coverage = -1.0
+    best_attempt_max_score = -1.0
+    for attempt_mode in mode_attempts:
+        constraints["mode"] = attempt_mode
+        if original_max_travel_min is not None:
+            if attempt_mode == "bike" and constraints.get("mode_source") != "explicit":
+                constraints["max_travel_min"] = max(float(original_max_travel_min), 18)
+            else:
+                constraints["max_travel_min"] = original_max_travel_min
+        attempt_variants = {}
+        for vname in variant_names:
+            route = build_route_v3(poi_dict, gt_data, constraints, hours_map, network, vname,
+                                   spatial_index=spatial_index, type_index=type_index,
+                                   candidates=candidates, knn_graph=knn_graph,
+                                   semantic_poi_ids=semantic_poi_ids,
+                                   route_limits=route_limits,
+                                   goal_text=goal,
+                                   trace=trace)
+            if route:
+                attempt_variants[vname] = format_route_v3(route, constraints, gt_data, hours_map, network, vname,
+                                                          type_index=type_index, knn_graph=knn_graph)
+        produced = len(attempt_variants)
+        attempt_coverages = [
+            float((variant.get("model_selection") or {}).get("intent_coverage") or 0)
+            for variant in attempt_variants.values()
+        ]
+        attempt_scores = [
+            float((variant.get("model_selection") or {}).get("score") or 0)
+            for variant in attempt_variants.values()
+        ]
+        attempt_max_coverage = max(attempt_coverages) if attempt_coverages else 0.0
+        attempt_max_score = max(attempt_scores) if attempt_scores else 0.0
+        trace["mode_scheduler"]["attempted"].append({
+            "mode": attempt_mode,
+            "produced_variants": produced,
+            "max_intent_coverage": round(attempt_max_coverage, 3),
+        })
+        if attempt_variants and (
+            attempt_max_coverage > best_attempt_max_coverage
+            or (
+                attempt_max_coverage == best_attempt_max_coverage
+                and attempt_max_score > best_attempt_max_score
+            )
+        ):
+            best_attempt_variants = attempt_variants
+            best_attempt_mode = attempt_mode
+            best_attempt_max_coverage = attempt_max_coverage
+            best_attempt_max_score = attempt_max_score
+        if attempt_variants and attempt_max_coverage >= 0.999:
+            variants = attempt_variants
+            trace["mode_scheduler"]["selected"] = attempt_mode
+            break
+    if not variants and best_attempt_variants:
+        variants = best_attempt_variants
+        constraints["mode"] = best_attempt_mode
+        trace["mode_scheduler"]["selected"] = best_attempt_mode
+    if not variants:
+        constraints["mode"] = original_mode
+        constraints["max_travel_min"] = original_max_travel_min
 
-    if not variants and intent_type == "simple_route":
-        fallback = _build_sequence_recommendation_variant(
-            candidates, gt_data, constraints, hours_map, type_index, center_lng, center_lat
+    if intent_type == "simple_route":
+        ranked_variants = _rank_variants_for_response(list(variants.values()))
+        best_coverage = (
+            float((ranked_variants[0].get("model_selection") or {}).get("intent_coverage") or 0)
+            if ranked_variants else 0.0
         )
-        if fallback:
-            variants["sequence_fallback"] = fallback
+        if best_coverage < 0.999:
+            fallback_options = []
+            original_fallback_mode = constraints.get("mode")
+            fallback_modes = [original_fallback_mode]
+            if constraints.get("mode_source") != "explicit":
+                for mode_option in ("bike", "walk"):
+                    if mode_option not in fallback_modes:
+                        fallback_modes.append(mode_option)
+            for fallback_mode in fallback_modes:
+                if not fallback_mode:
+                    continue
+                constraints["mode"] = fallback_mode
+                fallback_variant = _build_sequence_recommendation_variant(
+                    candidates, gt_data, constraints, hours_map, type_index, center_lng, center_lat,
+                    network=network, knn_graph=knn_graph
+                )
+                if fallback_variant:
+                    fallback_options.append(fallback_variant)
+            constraints["mode"] = original_fallback_mode
+            fallback = _rank_variants_for_response(fallback_options)[0] if fallback_options else None
+            fallback_coverage = float((fallback.get("model_selection") or {}).get("intent_coverage") or 0) if fallback else 0.0
+            if fallback and (not variants or fallback_coverage > best_coverage):
+                variants["sequence_fallback"] = fallback
 
     # 保存 KNN 缓存（懒加载：本次计算的距离下次复用）
     if knn_graph:
@@ -3480,92 +4384,199 @@ def build_plan_v3(goal, pois, gt_data, center_lng=DEFAULT_CENTER_LNG, center_lat
         "constraints": _public_constraints(constraints),
         "center": {"lng": center_lng, "lat": center_lat, "radius_m": effective_radius},
         "model": _model_metadata(intent_result, constraints, trace, semantic_poi_ids),
-        "variants": list(variants.values()),
+        "variants": _rank_variants_for_response(list(variants.values())),
     }
 
 
-def _build_sequence_recommendation_variant(candidates, gt_data, constraints, hours_map, type_index, center_lng, center_lat):
-    sequence = constraints.get("sequence") or []
-    if not sequence:
+def _build_sequence_recommendation_variant(candidates, gt_data, constraints, hours_map, type_index, center_lng, center_lat,
+                                           network=None, knn_graph=None):
+    requested_sequence = _route_required_targets(constraints)
+    if not requested_sequence:
         return None
-    recs = []
-    used = set()
-    route_policy = _route_feasibility_policy(constraints, "relaxed")
+    sequence_options = [list(requested_sequence)]
+    if (
+        constraints.get("intent_type") == "simple_route"
+        and 1 < len(requested_sequence) <= 3
+        and _sequence_reorder_allowed(constraints)
+    ):
+        seen_options = {tuple(requested_sequence)}
+        for option in permutations(requested_sequence):
+            if option not in seen_options:
+                sequence_options.append(list(option))
+                seen_options.add(option)
+
     mode = constraints.get("mode", "walk")
-    current_time_for_selection = datetime.strptime(constraints.get("start_time", "09:00"), "%H:%M")
-    prev_lng, prev_lat = center_lng, center_lat
-    cumulative_move_distance = 0.0
-    cumulative_move_time = 0.0
-    for expected in sequence:
-        scored = []
-        expected_cat = _get_category(expected)
-        for p in candidates:
-            pid = p["poi_id"]
-            if pid in used:
-                continue
-            rt = type_index.get(pid, "其他") if type_index else "其他"
-            cat = _get_category(rt)
-            if not _sequence_type_matches(rt, expected):
-                continue
-            if _is_excluded_by_mode(rt, constraints):
-                continue
-            dist_m = _straight_distance_m(prev_lng, prev_lat, p["longitude"], p["latitude"])
-            time_min = _travel_time_from_distance(dist_m, mode)
-            feasible, feasibility_detail = _segment_route_feasible(
-                dist_m, time_min, dist_m, route_policy, cumulative_move_time, cumulative_move_distance
+    beam_width = 10
+    per_type_limit = 56
+    complete_beams = []
+    for sequence in sequence_options:
+        search_constraints = dict(constraints)
+        search_constraints["sequence"] = list(sequence)
+        route_policy = _route_feasibility_policy(search_constraints, "relaxed")
+        base_time = datetime.strptime(search_constraints.get("start_time", "09:00"), "%H:%M")
+        beams = [{
+            "pois": [],
+            "records": [],
+            "used": set(),
+            "score": 0.0,
+            "move_distance": 0.0,
+            "move_time": 0.0,
+            "time": base_time,
+            "sequence": list(sequence),
+        }]
+
+        for expected in sequence:
+            expected_pool = _top_candidates_for_expected_type(
+                candidates, gt_data, search_constraints, type_index, expected, per_type_limit, set(),
+                center_lng=center_lng, center_lat=center_lat, network=network, mode=mode, hours_map=hours_map
             )
-            if not feasible:
+            next_beams = []
+            if not expected_pool:
+                beams = []
+                break
+            for beam in beams:
+                for p in expected_pool:
+                    pid = p["poi_id"]
+                    if pid in beam["used"]:
+                        continue
+                    rt = type_index.get(pid, "其他") if type_index else "其他"
+                    rt = _correct_candidate_type(p, rt)
+                    cat = _get_category(rt)
+                    if _is_excluded_by_mode(rt, search_constraints):
+                        continue
+                    if beam["pois"]:
+                        dist_m, time_min, _ = _route_between_pois(network, knn_graph, beam["pois"][-1], p, mode)
+                        if dist_m is None or time_min is None:
+                            continue
+                        direct_m = _straight_distance_m(
+                            beam["pois"][-1]["longitude"], beam["pois"][-1]["latitude"],
+                            p["longitude"], p["latitude"]
+                        )
+                    else:
+                        dist_m, time_min, _, _ = _route_from_location_to_poi(network, center_lng, center_lat, p, mode)
+                        if dist_m is None or time_min is None:
+                            continue
+                        direct_m = _straight_distance_m(center_lng, center_lat, p["longitude"], p["latitude"])
+                    feasible, relaxed_detail = _segment_route_feasible(
+                        dist_m, time_min, direct_m, route_policy, beam["move_time"], beam["move_distance"]
+                    )
+                    feasibility_detail = relaxed_detail
+                    if not feasible and search_constraints.get("intent_type") == "simple_route":
+                        relaxed_policy = dict(route_policy)
+                        relaxed_segment = min(
+                            max(18, route_policy["max_segment_time_min"]),
+                            max(32, float(search_constraints.get("time_budget_hours", 1) or 1) * 60 * 0.36),
+                        )
+                        relaxed_policy["max_segment_time_min"] = relaxed_segment
+                        relaxed_policy["max_segment_distance_m"] = relaxed_segment * _route_speed_m_per_min(mode) * 1.15
+                        feasible, relaxed_detail = _segment_route_feasible(
+                            dist_m, time_min, direct_m, relaxed_policy, beam["move_time"], beam["move_distance"]
+                        )
+                        if feasible:
+                            feasibility_detail = relaxed_detail
+                            feasibility_detail["relaxed_sequence_fallback"] = True
+                    if not feasible:
+                        continue
+                    arrival_str = (beam["time"] + timedelta(minutes=time_min)).strftime("%H:%M")
+                    if not is_open_at(pid, arrival_str, hours_map):
+                        continue
+                    gt = gt_data.get(pid, {})
+                    score, features, reasons, _ = _score_poi_features(
+                        p, gt, search_constraints, {rec["type"] for rec in beam["records"]}, None, type_index
+                    )
+                    sequence_boost = 5.0
+                    mobility_penalty = _route_mobility_penalty(
+                        time_min, dist_m, direct_m, route_policy, beam["move_time"], beam["move_distance"]
+                    )
+                    segment_score = score + sequence_boost + mobility_penalty
+                    center_penalty = _straight_distance_m(center_lng, center_lat, p["longitude"], p["latitude"]) / 2200
+                    total_score = beam["score"] + segment_score - center_penalty
+                    record = {
+                        "score": segment_score,
+                        "poi": p,
+                        "type": rt,
+                        "category": cat,
+                        "features": features,
+                        "reasons": reasons,
+                        "sequence_boost": sequence_boost,
+                        "distance_m": dist_m,
+                        "direct_m": direct_m,
+                        "time_min": time_min,
+                        "feasibility_detail": feasibility_detail,
+                        "mobility_penalty": mobility_penalty,
+                        "arrival_str": arrival_str,
+                    }
+                    stay = _stay_minutes(rt, search_constraints, variant_name="relaxed")
+                    next_beams.append({
+                        "pois": beam["pois"] + [dict(p)],
+                        "records": beam["records"] + [record],
+                        "used": set(beam["used"]) | {pid},
+                        "score": total_score,
+                        "move_distance": beam["move_distance"] + float(dist_m or 0),
+                        "move_time": beam["move_time"] + float(time_min or 0),
+                        "time": beam["time"] + timedelta(minutes=time_min + stay),
+                        "sequence": list(sequence),
+                    })
+            if not next_beams:
+                beams = []
+                break
+            next_beams.sort(key=lambda item: -item["score"])
+            beams = next_beams[:beam_width]
+
+        for beam in beams:
+            metrics = _route_sequence_metrics(beam["pois"], search_constraints, network, knn_graph, "relaxed")
+            if not metrics.get("feasible"):
                 continue
-            arrival_str = (current_time_for_selection + timedelta(minutes=time_min)).strftime("%H:%M")
-            if not is_open_at(pid, arrival_str, hours_map):
+            coverage, matched = _route_required_type_coverage(beam["pois"], constraints, type_index)
+            if coverage < 1.0:
                 continue
-            gt = gt_data.get(pid, {})
-            score, features, reasons, _ = _score_poi_features(p, gt, constraints, set(), None, type_index)
-            sequence_boost = 5.0
-            mobility_penalty = _route_mobility_penalty(
-                time_min, dist_m, dist_m, route_policy, cumulative_move_time, cumulative_move_distance
+            quality = sum(
+                float(gt_data.get(poi["poi_id"], {}).get("overall", 3.0) or 3.0)
+                for poi in beam["pois"]
+            ) / max(len(beam["pois"]), 1)
+            compactness = float(metrics.get("compactness") or 0)
+            move_margin = 1.0 - float(metrics.get("total_move_time_min") or 0) / max(
+                float((metrics.get("policy") or {}).get("max_total_move_time_min") or 1), 1
             )
-            score += sequence_boost + mobility_penalty
-            scored.append((
-                score, p, rt, cat, features, reasons, sequence_boost,
-                dist_m, time_min, feasibility_detail, mobility_penalty, arrival_str
-            ))
-        scored.sort(key=lambda x: -x[0])
-        if scored:
-            (
-                score, p, rt, cat, features, reasons, sequence_boost,
-                dist_m, time_min, feasibility_detail, mobility_penalty, arrival_str
-            ) = scored[0]
-            used.add(p["poi_id"])
-            recommendation_basis = _build_recommendation_basis(
-                score,
-                features,
-                reasons,
-                arrival_time=arrival_str,
-                open_at_arrival=True,
-                distance_m=dist_m,
-                travel_time_min=time_min,
-                sequence_boost=sequence_boost,
-                distance_penalty=mobility_penalty,
-                route_feasibility=feasibility_detail,
+            reordered_penalty = 1.2 if list(sequence) != list(requested_sequence) else 0.0
+            model_score = (
+                beam["score"] + coverage * 9.0 + quality * 1.4 + compactness * 1.1
+                + max(0.0, move_margin) - reordered_penalty
             )
-            recs.append({
-                "poi_id": p["poi_id"],
-                "name": p["name"],
-                "type": rt,
-                "category": cat,
-                "score": round(score, 2),
-                "location": {"lng": p["longitude"], "lat": p["latitude"]},
-                "business_hours": hours_map.get(p["poi_id"], {}),
-                "ground_truth": gt_data.get(p["poi_id"], {}),
-                "recommendation_basis": recommendation_basis,
-                "review_summary": _build_review_summary(p, rt, gt_data.get(p["poi_id"], {}), recommendation_basis),
-            })
-            stay = _stay_minutes(rt, constraints, variant_name="relaxed")
-            cumulative_move_distance += dist_m
-            cumulative_move_time += time_min
-            current_time_for_selection += timedelta(minutes=time_min + stay)
-            prev_lng, prev_lat = p["longitude"], p["latitude"]
+            complete_beams.append((model_score, beam, metrics, matched, list(sequence)))
+    if not complete_beams:
+        return None
+    complete_beams.sort(key=lambda item: -item[0])
+    model_score, selected_beam, route_metrics, matched_required, planned_sequence = complete_beams[0]
+    sequence_adjusted = list(planned_sequence) != list(requested_sequence)
+
+    recs = []
+    for record in selected_beam["records"]:
+        p = record["poi"]
+        recommendation_basis = _build_recommendation_basis(
+            record["score"],
+            record["features"],
+            record["reasons"] + (["为减少绕行并覆盖全部目标，模型调整了访问顺序"] if sequence_adjusted else []),
+            arrival_time=record["arrival_str"],
+            open_at_arrival=True,
+            distance_m=record["distance_m"],
+            travel_time_min=record["time_min"],
+            sequence_boost=record["sequence_boost"],
+            distance_penalty=record["mobility_penalty"],
+            route_feasibility=record["feasibility_detail"],
+        )
+        recs.append({
+            "poi_id": p["poi_id"],
+            "name": p["name"],
+            "type": record["type"],
+            "category": record["category"],
+            "score": round(record["score"], 2),
+            "location": {"lng": p["longitude"], "lat": p["latitude"]},
+            "business_hours": hours_map.get(p["poi_id"], {}),
+            "ground_truth": gt_data.get(p["poi_id"], {}),
+            "recommendation_basis": recommendation_basis,
+            "review_summary": _build_review_summary(p, record["type"], gt_data.get(p["poi_id"], {}), recommendation_basis),
+        })
     if not recs:
         return None
     route_steps = []
@@ -3575,8 +4586,9 @@ def _build_sequence_recommendation_variant(candidates, gt_data, constraints, hou
     total_move_time = 0.0
     for i, rec in enumerate(recs):
         loc = rec["location"]
-        dist_m = _straight_distance_m(prev_lng, prev_lat, loc["lng"], loc["lat"])
-        time_min = _travel_time_from_distance(dist_m, mode)
+        record = selected_beam["records"][i]
+        dist_m = record["distance_m"]
+        time_min = record["time_min"]
         stay = _stay_minutes(rec["type"], constraints, variant_name="relaxed")
         arr_time = current_time + timedelta(minutes=time_min)
         dep_time = arr_time + timedelta(minutes=stay)
@@ -3607,22 +4619,12 @@ def _build_sequence_recommendation_variant(candidates, gt_data, constraints, hou
         current_time = dep_time
         prev_lng, prev_lat = loc["lng"], loc["lat"]
     total_time = (current_time - datetime.strptime(constraints.get("start_time", "09:00"), "%H:%M")).total_seconds() / 60
-    route_pois = [
-        {
-            "poi_id": rec["poi_id"],
-            "name": rec["name"],
-            "longitude": rec["location"]["lng"],
-            "latitude": rec["location"]["lat"],
-        }
-        for rec in recs
-    ]
-    route_metrics = _route_sequence_metrics(route_pois, constraints, None, None, "relaxed")
-    if not route_metrics.get("feasible"):
-        return None
+    intent_coverage = len(matched_required) / max(len(requested_sequence), 1)
+    route_compactness = float(route_metrics.get("compactness") or 0)
     return {
         "variant_id": "sequence_fallback",
-        "name": "顺序候选路线",
-        "description": "按您的访问顺序生成的可执行候选路线",
+        "name": "组合意图路线",
+        "description": "覆盖您说出的地点类型，并按路网可行性控制绕行" if sequence_adjusted else "按您的访问顺序生成的可执行候选路线",
         "poi_count": len(recs),
         "total_time_minutes": round(total_time),
         "total_move_time": round(total_move_time, 1),
@@ -3630,6 +4632,31 @@ def _build_sequence_recommendation_variant(candidates, gt_data, constraints, hou
         "time_utilization": round(total_time / max(constraints["time_budget_hours"] * 60, 1), 2),
         "start_location": {"lng": center_lng, "lat": center_lat},
         "route_feasibility": _public_route_feasibility(route_metrics),
+        "model_selection": {
+            "score": round(model_score, 3),
+            "intent_coverage": round(intent_coverage, 3),
+            "route_compactness": round(route_compactness, 3),
+            "matched_required": matched_required,
+            "generator": "sequence_fallback",
+            "travel_mode": mode,
+            "requested_sequence": requested_sequence,
+            "planned_sequence": planned_sequence,
+            "sequence_adjusted": sequence_adjusted,
+        },
         "route": route_steps,
         "recommendations": recs,
     }
+
+
+def _rank_variants_for_response(variants):
+    def _score(variant):
+        selection = variant.get("model_selection") or {}
+        feasibility = variant.get("route_feasibility") or {}
+        coverage = float(selection.get("intent_coverage") or 0)
+        model_score = float(selection.get("score") or 0)
+        compactness = float(feasibility.get("compactness") or selection.get("route_compactness") or 0)
+        utilization = float(variant.get("time_utilization") or 0)
+        route_bonus = 0.3 if variant.get("route") else 0
+        feasible_bonus = 0.5 if feasibility.get("feasible", True) else -4.0
+        return coverage * 10 + model_score * 0.4 + compactness * 0.8 + min(utilization, 1.1) * 0.4 + route_bonus + feasible_bonus
+    return sorted(variants, key=_score, reverse=True)

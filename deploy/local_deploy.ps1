@@ -4,7 +4,7 @@
 # ================================================================
 [CmdletBinding()]
 param(
-    [string]$ServerHost = "47.102.142.207",
+    [string]$ServerHost = "124.223.28.124",
     [string]$ServerUser = "root",
     [string]$RemotePath = "/opt/routemind",
     [string]$OutFile = ""
