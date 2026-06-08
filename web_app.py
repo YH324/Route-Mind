@@ -277,8 +277,8 @@ def _error_code_to_http(error_code):
 
 def _check_llm_ready():
     """检查至少一个 LLM provider 可用。"""
-    from config import MIMO_API_KEY, MINIMAX_API_KEY, GLM_API_KEY
-    return bool(MIMO_API_KEY or MINIMAX_API_KEY or GLM_API_KEY)
+    from config import DEEPSEEK_API_KEY, MIMO_API_KEY, MINIMAX_API_KEY, GLM_API_KEY
+    return bool(DEEPSEEK_API_KEY or MIMO_API_KEY or MINIMAX_API_KEY or GLM_API_KEY)
 
 
 # ---------- Handler ----------

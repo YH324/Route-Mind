@@ -276,26 +276,55 @@ def _call_llm_api(url, api_key, model, system_prompt, user_prompt, timeout=15,
     return result
 
 
-def classify_intent_with_llm(goal_text):
+def classify_intent_with_llm(goal_text, session_history=None):
     """
-    调用大模型判断用户意图类型。
+    调用大模型判断用户意图类型，支持多轮对话上下文。
     优先级：DeepSeek > MiMo > MiniMax Coding Plan > GLM > 本地语义兜底
+    
+    当 LLM provider 可用时，优先使用 LLM 进行意图分类（包括多轮上下文理解）。
+    本地 fast_gate 仅在 LLM 完全不可用时作为 fallback。
+    
+    Args:
+        goal_text: 当前用户输入
+        session_history: 历史对话记录，格式 [{"turn": 1, "goal": "...", "ts": 1234567890}, ...]
     
     Returns:
         dict: {"intent_type": "single_poi|simple_route|complex_route", "reason": str, "llm_used": bool}
     """
+    session_history = session_history or []
+    has_llm = _has_intent_llm_provider()
+    
+    # 计算 fast_gate 作为 LLM 完全不可用时的 fallback
     fast_gate = _high_confidence_intent_gate(goal_text)
-    if fast_gate and not _has_intent_llm_provider():
+    
+    # 如果完全没有配置 LLM，直接返回本地门控结果
+    if fast_gate and not has_llm:
         fast_gate["llm_used"] = False
-        print(f"[Intent] Deterministic gate: {fast_gate['intent_type']}")
+        print(f"[Intent] Deterministic gate (no LLM): {fast_gate['intent_type']}")
         return fast_gate
+    
+    # 构建用户 prompt：包含多轮历史上下文
+    if session_history:
+        history_text = "\n".join([
+            f"第{item.get('turn', i+1)}轮：{item.get('goal', item.get('query', ''))}"
+            for i, item in enumerate(session_history[-5:])  # 最近5轮
+        ])
+        user_prompt = (
+            f"【对话历史】\n{history_text}\n\n"
+            f"【当前输入】\n{goal_text}\n\n"
+            f"请基于以上对话历史，判断用户当前的真实意图类型。"
+        )
+        is_multi_turn = True
+    else:
+        user_prompt = goal_text
+        is_multi_turn = False
 
     system_prompt = (
-        "你是一个旅游意图分类助手。根据用户的自然语言输入，判断用户的真实意图类型。\n"
+        "你是一个旅游意图分类助手。" + ("当前处于多轮对话中，请结合历史上下文理解用户当前输入。" if is_multi_turn else "") + "\n"
         "intent_type 只能是以下三种之一：\n"
-        "1. single_poi：用户只想去一个地方，或只想找某个类型的单个地点（如'想吃火锅'、'找个咖啡馆'、'附近有好吃的烧烤吗'）\n"
+        "1. single_poi：用户只想去一个地方，或只想找某个类型的单个地点（如'想吃火锅'、'找个咖啡馆'）\n"
         "2. simple_route：用户想去 2-3 个地方简单逛逛，有明确的少量地点组合（如'吃完火锅去茶馆'、'想逛街顺便吃个饭'）\n"
-        "3. complex_route：用户要求规划完整路线，想串联多个地点，或提到'半日游'、'一日游'、'攻略'等词汇（如'成都半日游'、'想逛多个景点'）\n\n"
+        "3. complex_route：用户要求规划完整路线，想串联多个地点，或提到'半日游'、'一日游'、'攻略'等词汇\n\n"
         "输出要求：\n"
         "- 必须只输出纯 JSON，不要任何解释、前言、emoji、markdown代码块\n"
         "- 输出格式示例：{\"intent_type\": \"single_poi\", \"reason\": \"用户只想吃火锅\"}\n"
@@ -312,7 +341,7 @@ def classify_intent_with_llm(goal_text):
             try:
                 result = _call_llm_api(
                     DEEPSEEK_CHAT_URL, DEEPSEEK_API_KEY, DEEPSEEK_MODEL,
-                    system_prompt, goal_text,
+                    system_prompt, user_prompt,
                     auth_type=DEEPSEEK_AUTH_TYPE,
                     token_field="max_tokens",
                     include_thinking=False,
@@ -341,7 +370,7 @@ def classify_intent_with_llm(goal_text):
             try:
                 result = _call_llm_api(
                     MIMO_CHAT_URL, MIMO_API_KEY, MIMO_MODEL,
-                    system_prompt, goal_text,
+                    system_prompt, user_prompt,
                     auth_type=MIMO_AUTH_TYPE,
                     token_field="max_completion_tokens",
                     include_thinking=True,
@@ -370,7 +399,7 @@ def classify_intent_with_llm(goal_text):
             try:
                 result = _call_llm_api(
                     MINIMAX_CHAT_URL, MINIMAX_API_KEY, MINIMAX_MODEL,
-                    system_prompt, goal_text,
+                    system_prompt, user_prompt,
                     auth_type=MINIMAX_AUTH_TYPE,
                     token_field="max_tokens",
                     include_thinking=False,
@@ -399,7 +428,7 @@ def classify_intent_with_llm(goal_text):
             try:
                 result = _call_llm_api(
                     GLM_CHAT_URL, GLM_API_KEY, GLM_MODEL,
-                    system_prompt, goal_text,
+                    system_prompt, user_prompt,
                     auth_type=GLM_AUTH_TYPE,
                     token_field="max_tokens",
                     include_thinking=False,
@@ -3696,13 +3725,19 @@ def build_plan_v3(goal, pois, gt_data, center_lng=DEFAULT_CENTER_LNG, center_lat
     constraints["user_mode_label"] = mode_cfg["label"]
     constraints["max_shopping"] = mode_cfg["max_shopping"]
 
-    # 调用大模型判断用户意图复杂度
-    intent_result = classify_intent_with_llm(goal)
+    # 调用大模型判断用户意图复杂度（支持多轮对话上下文）
+    session_history = (interaction_context or {}).get("session_history", [])
+    intent_result = classify_intent_with_llm(goal, session_history=session_history)
     intent_type = intent_result["intent_type"]
+    # 多轮对话中优先信任 LLM 的上下文理解，不覆盖其意图判断
+    is_multi_turn = bool(session_history)
     if constraints.get("intent_hint") in ("single_poi", "simple_route", "complex_route"):
-        intent_type = constraints["intent_hint"]
-        intent_result["intent_type"] = intent_type
-        intent_result["reason"] = "interaction context intent hint"
+        if not (is_multi_turn and intent_result.get("llm_used")):
+            intent_type = constraints["intent_hint"]
+            intent_result["intent_type"] = intent_type
+            intent_result["reason"] = "interaction context intent hint"
+        else:
+            intent_result["reason"] = f"llm_multi_turn: {intent_result.get('reason', '')}"
     if len(constraints.get("sequence") or []) >= 2 and intent_type == "single_poi":
         intent_type = "simple_route"
         intent_result["intent_type"] = intent_type

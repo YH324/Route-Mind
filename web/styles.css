@@ -189,6 +189,37 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 }
 .segmented button.active { color: #fff; background: var(--green-dark); }
 
+.conversation-history {
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--panel), white 12%);
+  padding: 10px 12px;
+  transition: box-shadow .2s;
+  flex-shrink: 0;
+}
+.conversation-history[hidden] { display: none; }
+.conversation-head {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 6px;
+}
+.conversation-label { color: var(--muted); font-size: 11px; font-weight: 700; }
+.conversation-list {
+  display: flex; flex-direction: column; gap: 4px;
+  max-height: 120px; overflow-y: auto;
+}
+.conversation-item {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 8px; border-radius: var(--pill);
+  background: rgba(0,0,0,.03); font-size: 11px;
+}
+.conversation-turn {
+  color: var(--blue); font-weight: 700; white-space: nowrap;
+  font-size: 10px;
+}
+.conversation-text {
+  color: var(--ink); opacity: .7;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 .search-card {
   border-radius: var(--radius-lg);
   background: color-mix(in srgb, var(--panel), white 12%);
@@ -353,6 +384,7 @@ details > summary::-webkit-details-marker { display: none; }
 .meta-pill { padding: 3px 7px; border-radius: var(--pill); background: rgba(0,0,0,.04); color: var(--muted); font-size: 10px; font-weight: 700; }
 .meta-pill.ok { background: color-mix(in srgb, var(--green), transparent 92%); color: var(--green); }
 .meta-pill.warn { background: color-mix(in srgb, var(--orange), transparent 92%); color: var(--orange-deep); }
+.meta-pill.info { background: color-mix(in srgb, var(--blue), transparent 92%); color: var(--blue); }
 
 /* ---------- Right ---------- */
 .right { padding: 18px; display: flex; flex-direction: column; gap: 8px; min-height: 0; }

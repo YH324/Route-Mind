@@ -11,6 +11,8 @@ output/*.log
 # Local screenshots and one-off helper scripts
 screenshot*.png
 routemind*.tar.gz
+/_test_*.py
+/test_*.py
 _check_server.py
 _check_*.py
 _deploy_*.py

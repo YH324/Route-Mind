@@ -64,7 +64,10 @@ UNSUPPORTED_PLACE_TERMS = [
 
 
 def _detect_unsupported_area(goal, city):
-    city_key = str(city or "chengdu").lower()
+    city_key = str(city or "chengdu").lower().strip()
+    # 中文城市名映射
+    CN_CITY_MAP = {"成都": "chengdu", "成都市": "chengdu"}
+    city_key = CN_CITY_MAP.get(city_key, city_key)
     if city_key not in ("chengdu", "tianfu", "chunxi", "taikooli", "ifs", "jinli", "wuhouci", "jiuyanqiao", "languifang", "wangjiang"):
         return city
     for term in UNSUPPORTED_PLACE_TERMS:

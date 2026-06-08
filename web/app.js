@@ -88,7 +88,7 @@ const TYPE_COLORS = {
 const I18N = {
   zh: {
     eyebrow: "本地生活路线规划", goalLabel: "今天想怎么走？",
-    goalPlaceholder: "例如：小明：春熙路附近吃火锅\n小红：吃完想逛街\n小明：不要太贵",
+    goalPlaceholder: "例如：春熙路附近，下午四点想吃火锅",
     clearInput: "清空", lastGoal: "使用上次目标",
     modeLabel: "用户模式", modeTourist: "游客", modeBusiness: "出差", modeResident: "居民",
     modeNoteTourist: "游客模式优先景点和特色餐饮，自动控制同类地点重复。",
@@ -106,10 +106,10 @@ const I18N = {
     perfLoad: "数据加载", perfPlan: "路线规划", perfTotal: "总计",
     idle: "待命中", locating: "正在定位...", noGeo: "浏览器不支持定位", locationFailed: "定位失败",
     planning: "规划中...", done: "规划完成", emptyGoal: "请输入目标",
-    routeCopied: "路线文本已复制", poiCopied: "POI 名单已复制", exportTodo: "当前版本暂不支持图片导出",
+    routeCopied: "路线文本已复制", poiCopied: "POI 名单已复制", exportTodo: "路线已生成，可复制文本导出",
     clearedSession: "会话记忆已清除", clearedProfile: "长期画像已清除", noProfile: "没有可清除的长期画像",
     needUser: "请输入用户 ID", copiedName: "地点名已复制", locateStop: "已定位到该地点",
-    replaceTodo: "正在准备可替换候选", skipTodo: "已记录跳过偏好",
+    replaceTodo: "正在准备可替换候选", skipTodo: "已记录跳过偏好", skipStop: "跳过",
     noResult: "当前条件下没有可展示的地点",
     routeReady: "规划结果", defaultLocation: "默认", selected: "已选择", currentLocation: "当前位置",
     mapRouteTitle: "道路级路线", radiusUnit: "搜索半径",
@@ -118,6 +118,7 @@ const I18N = {
     copyName: "复制店名", focusMap: "地图定位", replace: "替换", skip: "跳过",
     detailsHint: "点击卡片或地图点查看详情", reviewNote: "精选口碑", estReviews: "约 {n} 条评价热度",
     askFollowup: "继续补充", budgetAuto: "智能估算",
+    newConversation: "新对话", continueHint: "继续补充你的需求...", turnLabel: "第{turn}轮",
     type: "类型", budget: "预算", mode: "方式", start: "起始", radius: "半径",
     intent: "交互意图", memory: "记忆", needs: "需求", conflicts: "冲突", notice: "提示",
     themeClear: "清爽", themeWarm: "暖橙", themeNight: "夜游",
@@ -130,7 +131,7 @@ const I18N = {
   },
   en: {
     eyebrow: "Local lifestyle route planner", goalLabel: "What do you want to do?",
-    goalPlaceholder: "Example: Ming: hotpot near Chunxi Road\nHong: shopping after dinner\nMing: keep it affordable",
+    goalPlaceholder: "Example: hotpot near Chunxi Road at 4pm",
     clearInput: "Clear", lastGoal: "Use Last",
     modeLabel: "User Mode", modeTourist: "Tourist", modeBusiness: "Business", modeResident: "Resident",
     modeNoteTourist: "Tourist mode prioritizes sights and local dining while reducing repeated types.",
@@ -148,10 +149,10 @@ const I18N = {
     perfLoad: "Load", perfPlan: "Plan", perfTotal: "Total",
     idle: "Ready", locating: "Locating...", noGeo: "Geolocation unavailable", locationFailed: "Location failed",
     planning: "Planning...", done: "Plan ready", emptyGoal: "Enter a goal",
-    routeCopied: "Route copied", poiCopied: "POI list copied", exportTodo: "Image export is not available in this version",
+    routeCopied: "Route copied", poiCopied: "POI list copied", exportTodo: "Route ready — copy text to export",
     clearedSession: "Session memory cleared", clearedProfile: "Profile cleared", noProfile: "No profile to clear",
     needUser: "Enter user ID", copiedName: "Name copied", locateStop: "Focused on this stop",
-    replaceTodo: "Replacement candidates are being prepared", skipTodo: "Skip preference noted",
+    replaceTodo: "Replacement candidates are being prepared", skipTodo: "Skip preference noted", skipStop: "Skip",
     noResult: "No displayable places under current constraints",
     routeReady: "Plan Result", defaultLocation: "Default", selected: "Selected", currentLocation: "Current",
     mapRouteTitle: "Street-level route", radiusUnit: "search radius",
@@ -160,6 +161,7 @@ const I18N = {
     copyName: "Copy", focusMap: "Focus", replace: "Replace", skip: "Skip",
     detailsHint: "Tap cards or map markers for details", reviewNote: "Review note", estReviews: "~{n} review signals",
     askFollowup: "Continue", budgetAuto: "auto",
+    newConversation: "New Chat", continueHint: "Continue your request...", turnLabel: "Turn {turn}",
     type: "Type", budget: "Budget", mode: "Mode", start: "Start", radius: "Radius",
     intent: "Intent", memory: "Memory", needs: "Needs", conflicts: "Conflicts", notice: "Notice",
     themeClear: "Clear", themeWarm: "Warm", themeNight: "Night",
@@ -179,6 +181,8 @@ let currentLocation = null;
 let currentResult = null;
 let currentVariants = [];
 let activeVariantIndex = 0;
+let conversationHistory = [];
+let currentTurnCount = 0;
 let map = null;
 let routeLayers = [];
 let poiLayers = [];
@@ -227,6 +231,49 @@ function renderPromptChips() {
   row.innerHTML = promptOptions().map(option => (
     `<button type="button" data-goal="${escapeHtml(option.goal)}">${escapeHtml(option.label)}</button>`
   )).join("");
+}
+
+// ---------- Conversation History ----------
+function addToHistory(goal) {
+  conversationHistory.push(goal);
+  currentTurnCount = conversationHistory.length;
+  renderConversationHistory();
+  updatePlaceholder();
+}
+
+function clearConversation() {
+  conversationHistory = [];
+  currentTurnCount = 0;
+  // Generate new session_id
+  sessionInput.value = "session-" + Math.random().toString(36).slice(2, 10);
+  renderConversationHistory();
+  updatePlaceholder();
+  goalInput.value = "";
+  showToast(t("newConversation"));
+}
+
+function renderConversationHistory() {
+  const list = document.getElementById("conversationList");
+  const box = document.getElementById("conversationHistory");
+  if (!list || !box) return;
+  if (conversationHistory.length === 0) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  list.innerHTML = conversationHistory.slice(-5).map((text, idx) => {
+    const turn = idx + Math.max(0, conversationHistory.length - 5) + 1;
+    const short = text.length > 18 ? text.slice(0, 18) + "..." : text;
+    return `<div class="conversation-item" title="${escapeHtml(text)}"><span class="conversation-turn">${t("turnLabel").replace("{turn}", turn)}</span><span class="conversation-text">${escapeHtml(short)}</span></div>`;
+  }).join("");
+}
+
+function updatePlaceholder() {
+  if (currentTurnCount > 0) {
+    goalInput.placeholder = t("continueHint");
+  } else {
+    goalInput.placeholder = t("goalPlaceholder");
+  }
 }
 function setStatus(text) {
   statusText.textContent = text;
@@ -280,6 +327,7 @@ function updateTexts() {
   if (resultDesc) resultDesc.textContent = currentResult ? (currentVariants[activeVariantIndex]?.description || "") : t("emptyDesc");
   if (resultStatus) { resultStatus.hidden = !currentResult; resultStatus.textContent = t("statusReady"); }
   updateModeNote();
+  renderConversationHistory();
   if (currentResult) renderResult({ result: currentResult, performance: currentResult._perf || {}, interaction: currentResult._interaction || {}, notice: currentResult._notice });
 }
 function applyLanguage(lang) { currentLang = lang; localStorage.setItem("routemind_lang", lang); updateTexts(); renderPromptChips(); }
@@ -450,7 +498,7 @@ function reasonItems(item, variant) {
 
 function actionButtons(item) {
   const id = escapeHtml(item.poi_id || item.name || "");
-  return `<div class="step-actions"><button data-action="copy-stop" data-id="${id}">${t("copyName")}</button><button data-action="focus-stop" data-id="${id}">${t("focusMap")}</button></div>`;
+  return `<div class="step-actions"><button data-action="copy-stop" data-id="${id}">${t("copyName")}</button><button data-action="focus-stop" data-id="${id}">${t("focusMap")}</button><button data-action="skip-stop" data-id="${id}">${t("skipStop")}</button></div>`;
 }
 
 function renderTabs(variants) {
@@ -538,6 +586,7 @@ function renderMeta(data, result) {
     [`${t("radius")}: ${c.radius || radiusSelect.value}m`],
   ];
   if (inter.intent_hint) pills.push([`${t("intent")}: ${inter.intent_hint}`]);
+  if (inter.turn_count > 1) pills.push([`第${inter.turn_count}轮对话`, "info"]);
   if ((inter.memory_applied||[]).length) pills.push([`${t("memory")}: ${inter.memory_applied.join(",")}`]);
   if ((needs.labels||[]).length) pills.push([`${t("needs")}: ${needs.labels.join(",")}`]);
   if ((inter.conflicts||[]).length) pills.push([`${t("conflicts")}: ${inter.conflicts.length}`, "warn"]);
@@ -627,6 +676,10 @@ function handleStepAction(action, id) {
     return;
   }
   if (action === "skip-stop") {
+    const uid = userInput?.value?.trim();
+    if (uid) {
+      fetch("/api/feedback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: uid, feedback: { avoid_tags: [p.type, p.name] } }) }).catch(()=>{});
+    }
     showToast(t("skipTodo"));
   }
 }
@@ -647,7 +700,7 @@ function focusPoiOnMap(id) {
 }
 
 // ---------- Planner ----------
-function parseDialogue(text) { const lines = text.split(/\n+/).map(l=>l.trim()).filter(Boolean); const msgs=[]; lines.forEach(line=>{const m=line.match(/^([^:：]{1,16})[:：]\s*(.+)$/);if(m)msgs.push({speaker_id:m[1].trim(),text:m[2].trim()});});return msgs.length>=2?msgs:null;}
+
 function startProgress() { const steps = Array.from(planningProgress.querySelectorAll("span")); planningProgress.hidden = false; steps.forEach(s=>s.classList.remove("active","done")); let idx=0; steps[0]?.classList.add("active"); clearInterval(progressTimer); progressTimer = setInterval(()=>{steps.forEach((s,i)=>{s.classList.toggle("done",i<idx);s.classList.toggle("active",i===idx);});idx=Math.min(idx+1,steps.length-1);},650);}
 function stopProgress(done=false) { clearInterval(progressTimer); const steps = Array.from(planningProgress.querySelectorAll("span")); steps.forEach(s=>{s.classList.toggle("done",done);s.classList.remove("active");});setTimeout(()=>planningProgress.hidden=true,done?500:0);}
 
@@ -656,7 +709,6 @@ async function runPlanner() {
   if (!goal) { setStatus(t("emptyGoal")); document.querySelectorAll("#promptChips button").forEach(b=>{b.classList.add("suggested");setTimeout(()=>b.classList.remove("suggested"),1600);});return; }
   sessionStorage.setItem("routemind_last_goal", goal);
   const payload = { goal, radius: Number(radiusSelect.value), user_mode: currentMode, session_id: sessionInput.value.trim() || "default-session", user_id: userInput.value.trim() || undefined };
-  const dialogue = parseDialogue(goal); if (dialogue) payload.dialogue = dialogue;
   if (currentLocation) { payload.center_lat = currentLocation.lat; payload.center_lng = currentLocation.lng; }
   else { const c = CENTER_MAP[centerSelect.value] || CENTER_MAP.chunxi; payload.center_lat = c.lat; payload.center_lng = c.lng; payload.city = centerSelect.value; }
 
@@ -675,6 +727,7 @@ async function runPlanner() {
       throw error;
     }
     activeVariantIndex = 0; renderResult(data); setStatus(t("done")); stopProgress(true);
+    addToHistory(goal);
     if (isMobileViewport()) setMobileView("result");
     if (btnText) btnText.textContent = t("planButton");
   } catch (err) { setStatus(`Error: ${err.message}`); if (btnText) btnText.textContent = t("planButton"); showRequestError(err); stopProgress(false); console.error(err); }
@@ -728,6 +781,7 @@ variantPanels?.addEventListener("click", e => {
   const stop = e.target.closest(".stop[data-poi-id]");
   if (stop) focusPoiOnMap(stop.dataset.poiId);
 });
+document.getElementById("newConversationButton")?.addEventListener("click", clearConversation);
 document.getElementById("clearSessionButton")?.addEventListener("click", async () => { try { await fetch("/api/session/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionInput.value.trim() || "default-session" }) }); setStatus(t("clearedSession")); showToast(t("clearedSession")); } catch(e) {} });
 document.getElementById("clearProfileButton")?.addEventListener("click", async () => { const uid = userInput.value.trim(); if (!uid) { setStatus(t("needUser")); return; } try { const r = await fetch("/api/profile/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: uid }) }); const d = await r.json(); if (!r.ok || !d.ok) throw new Error(d.error || "Clear failed"); const m = d.cleared ? t("clearedProfile") : t("noProfile"); setStatus(m); showToast(m); } catch(e) { setStatus(`Error: ${e.message}`); } });
 serviceAcceptButton?.addEventListener("click", closeServiceNotice);

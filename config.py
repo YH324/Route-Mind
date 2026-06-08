@@ -81,7 +81,7 @@ GLM_API_KEY = _env("GLM_API_KEY", "")
 GLM_CHAT_URL = _chat_url("GLM_CHAT_URL", "GLM_BASE_URL", "https://open.bigmodel.cn/api/paas/v4")
 GLM_MODEL = _env("GLM_MODEL", "glm-4-flash")
 GLM_AUTH_TYPE = _env("GLM_AUTH_TYPE", "bearer")
-INTENT_LLM_FAILURE_COOLDOWN_SECONDS = _env_int("INTENT_LLM_FAILURE_COOLDOWN_SECONDS", 120)
+INTENT_LLM_FAILURE_COOLDOWN_SECONDS = _env_int("INTENT_LLM_FAILURE_COOLDOWN_SECONDS", 5)
 
 # ========== 服务配置 ==========
 SERVER_HOST = _env("HOST", "127.0.0.1")
@@ -90,7 +90,7 @@ SERVER_VERSION = _env("SERVER_VERSION", "3.3.0")
 REQUEST_TIMEOUT_SECONDS = _env_int("REQUEST_TIMEOUT_SECONDS", 90)
 MAX_REQUEST_BYTES = _env_int("MAX_REQUEST_BYTES", 64 * 1024)
 ENABLE_CORS = _env_bool("ENABLE_CORS", True)
-WARMUP_ON_START = _env_bool("WARMUP_ON_START", False)
+WARMUP_ON_START = _env_bool("WARMUP_ON_START", True)
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 
 # ========== 规划引擎参数 ==========

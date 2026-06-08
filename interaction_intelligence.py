@@ -169,8 +169,8 @@ def extract_budget(text):
     return int(match.group(1))
 
 
-FOLLOW_UP_TERMS = ("那附近", "刚才", "上次", "附近还有", "还有", "换成", "改成", "换一个", "再来", "再加", "顺便", "别的")
-CENTER_FOLLOW_UP_TERMS = ("那附近", "刚才", "上次", "附近还有", "还有", "换成", "改成", "换一个", "再来", "再加", "别的")
+FOLLOW_UP_TERMS = ("那附近", "刚才", "上次", "附近还有", "还有", "换成", "改成", "换一个", "再来", "再加", "顺便", "别的", "再", "然后", "接着", "之后", "吃完", "逛完", "玩完", "看完", "去完")
+CENTER_FOLLOW_UP_TERMS = ("那附近", "刚才", "上次", "附近还有", "还有", "换成", "改成", "换一个", "再来", "再加", "别的", "再", "然后", "接着", "之后")
 AMBIGUOUS_TERMS = ("随便", "都行", "安排一下", "推荐一下", "去哪", "怎么玩", "附近有什么", "不知道", "给个方案")
 
 
@@ -591,10 +591,32 @@ class InteractionManager:
         if tracker.messages:
             goal = tracker.combined_goal()
 
+        # 构建多轮对话历史（用于 LLM 上下文理解）
+        session_history = []
+        if session.get("queries"):
+            for i, q in enumerate(session["queries"][-5:], start=1):  # 最近5轮
+                session_history.append({
+                    "turn": i,
+                    "goal": q.get("goal", ""),
+                    "effective_goal": q.get("effective_goal", ""),
+                    "ts": q.get("ts", 0),
+                })
+        turn_count = len(session_history) + 1
+
         memory_applied = []
         is_follow_up = _is_follow_up(goal)
         goal_location = extract_location(goal)
-        if _uses_previous_center(goal) and session.get("center") and not goal_location:
+        
+        # 多轮对话自动继承：如果 session 有历史查询且当前没有明确位置，继承上次 center
+        if session.get("center") and not goal_location and session_history:
+            normalized["center_lng"] = session["center"]["lng"]
+            normalized["center_lat"] = session["center"]["lat"]
+            if session["center"].get("name"):
+                normalized["center_name"] = session["center"]["name"]
+            if session["center"].get("center_key"):
+                normalized["center_key"] = session["center"]["center_key"]
+            memory_applied.append("multi_turn_center")
+        elif _uses_previous_center(goal) and session.get("center") and not goal_location:
             normalized["center_lng"] = session["center"]["lng"]
             normalized["center_lat"] = session["center"]["lat"]
             if session["center"].get("name"):
@@ -682,6 +704,9 @@ class InteractionManager:
             "needs_clarification": needs_clarification,
             "clarification_options": clarification_options,
             "memory_applied": _unique(memory_applied),
+            "session_history": session_history,
+            "turn_count": turn_count,
+            "is_multi_turn": turn_count > 1,
         }
 
     def record_result(self, normalized, result, context):
@@ -788,6 +813,8 @@ def apply_context_to_constraints(constraints, context):
         "needs_clarification": context.get("needs_clarification", False),
         "clarification_options": context.get("clarification_options", []),
         "dialogue_state": context.get("dialogue_state"),
+        "is_multi_turn": context.get("is_multi_turn", False),
+        "turn_count": context.get("turn_count", 1),
     }
     return constraints
 
